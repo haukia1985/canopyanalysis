@@ -1,0 +1,11 @@
+# Circular mask parameters
+default_radius_fraction: 0.25
+
+blue_hue_low: 130
+blue_hue_high: 255
+blue_sat_low: 100
+blue_sat_high: 245
+blue_val_low: 150
+blue_val_high: 255
+brightness_threshold: 185
+log_level: INFO
