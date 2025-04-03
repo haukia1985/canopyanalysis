@@ -17,9 +17,95 @@ from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from pathlib import Path
 
 # Import our analyzer
 from CanopyApp.processing.canopy_analysis import CanopyAnalyzer
+
+class BatchProcessorCore:
+    """Core batch processing functionality without GUI."""
+    
+    def __init__(self, analyzer, output_dir):
+        """Initialize the batch processor core.
+        
+        Args:
+            analyzer: CanopyAnalyzer instance
+            output_dir: Path to output directory
+        """
+        self.analyzer = analyzer
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.results = []
+        self.session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+    def process_directory(self, input_dir):
+        """Process all images in a directory.
+        
+        Args:
+            input_dir: Path to directory containing images
+            
+        Returns:
+            List of processing results
+        """
+        input_dir = Path(input_dir)
+        self.results = []
+        
+        for image_path in input_dir.glob("*.jpg"):
+            result = self.process_image(image_path)
+            if result:
+                self.results.append(result)
+                
+        self.save_results()
+        return self.results
+    
+    def process_image(self, image_path):
+        """Process a single image.
+        
+        Args:
+            image_path: Path to image file
+            
+        Returns:
+            Dictionary containing processing results
+        """
+        try:
+            # Read image
+            img = cv2.imread(str(image_path))
+            if img is None:
+                return None
+                
+            # Process image
+            result = self.analyzer.analyze_image(img)
+            
+            # Add metadata
+            result['filename'] = image_path.name
+            result['timestamp'] = datetime.now().isoformat()
+            
+            return result
+            
+        except Exception as e:
+            print(f"Error processing {image_path}: {e}")
+            return None
+    
+    def save_results(self):
+        """Save processing results to CSV."""
+        if not self.results:
+            return
+            
+        # Save CSV
+        csv_path = self.output_dir / "results.csv"
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=self.results[0].keys())
+            writer.writeheader()
+            writer.writerows(self.results)
+            
+        # Save processed images
+        processed_dir = self.output_dir / "processed_images"
+        processed_dir.mkdir(exist_ok=True)
+        
+        for result in self.results:
+            if 'processed_image' in result:
+                img_path = processed_dir / f"processed_{result['filename']}"
+                cv2.imwrite(str(img_path), result['processed_image'])
 
 class BatchProcessor:
     """Batch processor for canopy images with review interface."""
@@ -41,8 +127,9 @@ class BatchProcessor:
         # Load test config for now
         self.config = self.load_test_config()
         
-        # Initialize analyzer
+        # Initialize analyzer and core processor
         self.analyzer = CanopyAnalyzer(self.config)
+        self.core_processor = None  # Will be initialized when output dir is selected
         
         # Setup UI
         self.setup_ui()
@@ -151,6 +238,9 @@ class BatchProcessor:
         os.makedirs(self.session_dir, exist_ok=True)
         os.makedirs(os.path.join(self.session_dir, "images"), exist_ok=True)
         
+        # Initialize core processor
+        self.core_processor = BatchProcessorCore(self.analyzer, self.output_dir)
+        
         # Update UI
         self.update_ui_state()
         
@@ -186,14 +276,10 @@ class BatchProcessor:
             progress.update()
             
             # Process image
-            result = self.analyzer.process_single_image(image_path, self.session_dir)
+            result = self.core_processor.process_image(image_path)
             
             if result:
-                self.results.append({
-                    "image_path": image_path,
-                    "file_name": os.path.basename(image_path),
-                    "result": result
-                })
+                self.results.append(result)
         
         # Close progress dialog
         progress.destroy()

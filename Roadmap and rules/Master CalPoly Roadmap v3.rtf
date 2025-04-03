@@ -1,0 +1,145 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2821
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+# Updated Canopy Cover Analysis App Development Roadmap version 2\
+\
+## Project Overview\
+- **Goal**: Create a cross-platform (Mac & Windows) portable Python app to analyze % of canopy cover from photographs\
+- **Users**: University researchers and students who are **not photo editing professionals**.\
+- **Approach**: Simple and easy to follow implementation with easy to deploy and debug code.\
+\
+## Core Requirements\
+- Use Python\
+- Make it easy to modify and change\
+- Divide the project into clear modules where GUI, image analysis and masking are all separated\
+- Make sure the analysis part is possible to adjust and implement different algorithms including LLM-based solutions\
+- Build upon existing script structure rather than completely restructuring\
+\
+## Core Functionality and features\
+- Simple GUI that allows user to navigate the whole analysis session\
+- Batch load images from a selected folder and show progress bar for analysis\
+- Each new session creates a time stamped output folder within the selected folder\
+- Use config.json file for thresholds and default values\
+- Mask the area of analysis with a circular mask:\
+  ```\
+  center = (w // 2, h // 2)\
+  radius = int(min(h, w) * 0.25)  # 25% of the smaller dimension\
+  mask = create_circular_mask(h, w, center, radius)\
+  ```\
+- Pre-classify and tag images with **Bright, Medium, or Dark** exposure groups based on average brightness of the masked circular area\
+- Apply canopy detection to the masked area using parameters from config.json for each exposure value\
+- Create a binary mask where sky is blue and canopy is green based on each pixel in the analysis area\
+- Create a secondary mask with values 5% over and under the threshold values with blue hue calculated as sky and green hue always calculated as canopy\
+- Calculate number of pixels in the analysis area, and % of sky vs. canopy in the photo with secondary mask providing threshold variance values\
+- Overlay mask on the original image\
+- Preview results one by one in the GUI with mask overlayed on the original image, showing canopy vs sky values and exposure tag\
+- User can:\
+  - Accept each result (outputs to session folder)\
+  - Select result for manual changes including:\
+    - Adjust threshold values via sliders with live preview\
+    - Choose a new center point via mouse click\
+    - Paint in sky or canopy manually with adjustable brush size\
+\
+## App Structure (Maintaining Current Structure)\
+```\
+CanopyApp/\
+\uc0\u9474 \u9472 \u9472  app.py             # Main entry point\
+\uc0\u9474 \u9472 \u9472  run.sh             # Mac/Linux startup script\
+\uc0\u9474 \u9472 \u9472  run.bat            # Windows startup script\
+\uc0\u9474 \u9472 \u9472  requirements.txt   # Dependencies\
+\uc0\u9474 \
+\uc0\u9500 \u9472 \u9472  gui/               # User Interface\
+\uc0\u9474    \u9500 \u9472 \u9472  main_window.py    # Main UI logic\
+\uc0\u9474    \u9500 \u9472 \u9472  settings.py       # Adjustable settings UI\
+\uc0\u9474    \u9500 \u9472 \u9472  results.py        # Display and export results\
+\uc0\u9474 \
+\uc0\u9500 \u9472 \u9472  processing/        # Core Image Processing\
+\uc0\u9474    \u9500 \u9472 \u9472  canopy_analysis.py  # Detect canopy cover\
+\uc0\u9474    \u9500 \u9472 \u9472  sky_detection.py    # Identify sky in images\
+\uc0\u9474    \u9500 \u9472 \u9472  utils.py            # Helper functions\
+\uc0\u9474    \u9500 \u9472 \u9472  config_manager.py   # Manages JSON configuration\
+\uc0\u9474 \
+\uc0\u9500 \u9472 \u9472  config/            # Configuration files\
+\uc0\u9474    \u9500 \u9472 \u9472  config.json        # User settings in JSON format\
+\uc0\u9474 \
+\uc0\u9500 \u9472 \u9472  models/            # AI Models (If used)\
+\uc0\u9474    \u9500 \u9472 \u9472  ai_assistant.py    # Future AI integration\
+\uc0\u9474 \
+\uc0\u9492 \u9472 \u9472  logs/              # Logging and debugging\
+```\
+\
+## Configuration File Format (JSON)\
+```json\
+\{\
+  "exposure_thresholds": \{\
+    "BRIGHT": \{\
+      "blue_hue_low": 100,\
+      "blue_hue_high": 140,\
+      "blue_sat_low": 50,\
+      "blue_sat_high": 255,\
+      "blue_val_low": 150,\
+      "blue_val_high": 255,\
+      "white_sat_threshold": 30,\
+      "white_val_threshold": 200,\
+      "bright_val_threshold": 220\
+    \},\
+    "MEDIUM": \{\
+      "blue_hue_low": 100,\
+      "blue_hue_high": 140,\
+      "blue_sat_low": 30,\
+      "blue_sat_high": 255,\
+      "blue_val_low": 100,\
+      "blue_val_high": 255,\
+      "white_sat_threshold": 30,\
+      "white_val_threshold": 180,\
+      "bright_val_threshold": 200\
+    \},\
+    "DARK": \{\
+      "blue_hue_low": 100,\
+      "blue_hue_high": 140,\
+      "blue_sat_low": 20,\
+      "blue_sat_high": 255,\
+      "blue_val_low": 50,\
+      "blue_val_high": 255,\
+      "white_sat_threshold": 30,\
+      "white_val_threshold": 150,\
+      "bright_val_threshold": 180\
+    \}\
+  \},\
+  "default_radius_fraction": 0.25,\
+  "max_workers": 4,\
+  "output": \{\
+    "create_exposure_folders": true,\
+    "save_processed_images": true,\
+    "image_format": "png"\
+  \}\
+\}\
+```\
+\
+## CSV Export Format\
+| Field | Description |\
+|-------|------------|\
+| `image_name` | Original image name |\
+| `center` | Center point selected for analysis |\
+| `total_pixels` | Pixels analyzed within the defined circular area |\
+| `sky_pixels` | Pixels classified as sky |\
+| `canopy_pixels` | Pixels classified as canopy |\
+| `canopy_density` | Ratio of canopy pixels to sky pixels |\
+| `canopy_density_low` | Lower boundary from secondary mask |\
+| `canopy_density_high` | Upper boundary from secondary mask |\
+| `exposure_category` | (Bright, Medium, Dark) based on thresholds |\
+| `manual_adjustment_flag` | (Yes/No) if manually adjusted |\
+| `error_status` | Log of processing issues, if any |\
+\
+## Output Image Format\
+Each processed image will be saved as a PNG file with:\
+- Original image\
+- Masked analysis area\
+- Overlay with sky (blue) and canopy (green) highlighted\
+- Text annotation with image name and resulting values\
+}

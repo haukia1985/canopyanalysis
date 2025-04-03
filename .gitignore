@@ -27,10 +27,14 @@ wheels/
 # Virtual environments
 canopy_env/
 venv/
+venv_new/
 ENV/
 env/
 .env
 .venv
+env.bak/
+venv.bak/
+.python-version
 
 # Temporary directory
 temp_repo/

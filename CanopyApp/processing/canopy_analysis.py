@@ -141,18 +141,139 @@ class ThresholdAdjuster:
         return self.get_thresholds()
 
 class CanopyAnalyzer:
-    """Core canopy analysis functionality."""
+    """Analyzer for canopy images."""
     
     def __init__(self, config: Dict):
-        """
-        Initialize the analyzer with configuration.
-        
-        Args:
-            config: Configuration dictionary
-        """
+        """Initialize the analyzer with configuration."""
         self.config = config
         self.logger = logging.getLogger(__name__)
         
+    def analyze_image(self, image: np.ndarray) -> Dict:
+        """Analyze a single image and return results.
+        
+        Args:
+            image: Input image as numpy array
+            
+        Returns:
+            Dictionary containing analysis results
+        """
+        # Create circular mask
+        center = self._select_center_point(image)
+        radius = int(min(image.shape[:2]) * self.config['default_radius_fraction'])
+        mask = self._create_circular_mask(image, center, radius)
+        
+        # Classify exposure
+        exposure = self.classify_exposure(image)
+        
+        # Detect sky
+        sky_mask = self.detect_sky(image, exposure)
+        
+        # Calculate canopy density
+        density = self.calculate_canopy_density(sky_mask)
+        
+        # Prepare result
+        result = {
+            'center': center,
+            'radius': radius,
+            'exposure': exposure,
+            'canopy_density': density,
+            'sky_pixels': np.sum(sky_mask == 255),
+            'canopy_pixels': np.sum(sky_mask == 0),
+            'total_pixels': np.prod(sky_mask.shape),
+            'processed_image': sky_mask
+        }
+        
+        return result
+        
+    def classify_exposure(self, image: np.ndarray) -> str:
+        """Classify image exposure based on pixel values.
+        
+        Args:
+            image: Input image as numpy array
+            
+        Returns:
+            Exposure category ('BRIGHT', 'MEDIUM', or 'DARK')
+        """
+        # Convert to HSV
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        
+        # Calculate average value
+        avg_value = np.mean(hsv[:, :, 2])
+        
+        # Classify based on thresholds
+        if avg_value > 200:
+            return 'BRIGHT'
+        elif avg_value > 100:
+            return 'MEDIUM'
+        else:
+            return 'DARK'
+            
+    def detect_sky(self, image: np.ndarray, exposure: str) -> np.ndarray:
+        """Detect sky regions in the image.
+        
+        Args:
+            image: Input image as numpy array in BGR format
+            exposure: Exposure category
+            
+        Returns:
+            Binary mask where 255 indicates sky pixels
+        """
+        # Convert BGR to HSV
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            
+        # Get thresholds for exposure category
+        thresholds = self.config['exposure_thresholds'][exposure]
+        
+        # Create mask for blue sky
+        blue_mask = cv2.inRange(hsv, 
+                              (thresholds['blue_hue_low'], thresholds['blue_sat_low'], thresholds['blue_val_low']),
+                              (thresholds['blue_hue_high'], thresholds['blue_sat_high'], thresholds['blue_val_high']))
+        
+        # Create mask for white/bright sky
+        white_mask = cv2.inRange(hsv,
+                               (0, 0, 200),  # Low saturation, high value for white/bright regions
+                               (180, 30, 255))
+        
+        # Combine masks
+        sky_mask = cv2.bitwise_or(blue_mask, white_mask)
+        
+        # Apply morphological operations to clean up the mask
+        kernel = np.ones((5,5), np.uint8)
+        sky_mask = cv2.morphologyEx(sky_mask, cv2.MORPH_OPEN, kernel)
+        sky_mask = cv2.morphologyEx(sky_mask, cv2.MORPH_CLOSE, kernel)
+        
+        return sky_mask
+        
+    def calculate_canopy_density(self, sky_mask: np.ndarray) -> float:
+        """Calculate canopy density from sky mask.
+        
+        Args:
+            sky_mask: Binary mask where 255 indicates sky pixels
+            
+        Returns:
+            Canopy density as float between 0 and 1 (percentage of non-sky pixels)
+        """
+        total_pixels = np.prod(sky_mask.shape)
+        sky_pixels = np.sum(sky_mask == 255)
+        canopy_pixels = total_pixels - sky_pixels
+        
+        # Calculate density as ratio of canopy pixels to total pixels
+        density = canopy_pixels / total_pixels
+        
+        return density
+        
+    def _select_center_point(self, image: np.ndarray) -> Tuple[int, int]:
+        """Select center point for circular mask."""
+        height, width = image.shape[:2]
+        return (width // 2, height // 2)
+        
+    def _create_circular_mask(self, image: np.ndarray, center: Tuple[int, int], 
+                            radius: int) -> np.ndarray:
+        """Create circular mask for image analysis."""
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        cv2.circle(mask, center, radius, 255, -1)
+        return mask
+
     def process_batch(self, image_paths: List[str], output_dir: str, 
                      centers_data: Dict[str, Tuple[int, int]], 
                      max_workers: int = None) -> List[ProcessingResult]:
@@ -237,7 +358,7 @@ class CanopyAnalyzer:
             exposure_category = self._classify_exposure(image, mask)
             
             # Detect sky
-            sky_mask = self._detect_sky(image, mask, exposure_category)
+            sky_mask = self._detect_sky(image, exposure_category)
             
             # Calculate statistics
             total_pixels = np.sum(mask > 0)
@@ -264,52 +385,6 @@ class CanopyAnalyzer:
         except Exception as e:
             self.logger.error(f"Error processing {image_path}: {str(e)}")
             return None
-    
-    def _select_center_point(self, image: np.ndarray) -> Tuple[int, int]:
-        """Interactive center point selection with GUI."""
-        def mouse_callback(event, x, y, flags, param):
-            if event == cv2.EVENT_LBUTTONDOWN:
-                param['center'] = (x, y)
-                cv2.destroyWindow('Select Center Point')
-                return True
-            return False
-
-        window_name = 'Select Center Point (Click to select, press Q to quit)'
-        cv2.namedWindow(window_name)
-        
-        # Calculate default radius
-        h, w = image.shape[:2]
-        radius = int(min(h, w) * self.config['default_radius_fraction'])
-        
-        # Start with center of image
-        current_center = (w // 2, h // 2)
-        param = {'center': current_center}
-        
-        cv2.setMouseCallback(window_name, mouse_callback, param)
-        
-        while True:
-            display_img = image.copy()
-            # Draw current circle and center marker
-            cv2.circle(display_img, param['center'], radius, (0, 255, 0), 2)
-            cv2.drawMarker(display_img, param['center'], (0, 0, 255), 
-                          cv2.MARKER_CROSS, 20, 2)
-            cv2.imshow(window_name, display_img)
-            
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-                
-        cv2.destroyAllWindows()
-        return param['center']
-    
-    def _create_circular_mask(self, image: np.ndarray, center: Tuple[int, int], 
-                            radius: int) -> np.ndarray:
-        """Create circular mask for analysis."""
-        h, w = image.shape[:2]
-        Y, X = np.ogrid[:h, :w]
-        dist_from_center = np.sqrt((X - center[0])**2 + (Y - center[1])**2)
-        mask = dist_from_center <= radius
-        return mask.astype(np.uint8) * 255
     
     def _classify_exposure(self, image: np.ndarray, mask: np.ndarray) -> str:
         """Enhanced exposure classification using both brightness and color."""
@@ -340,8 +415,7 @@ class CanopyAnalyzer:
                 return "MEDIUM_HIGH_SAT"
             return "MEDIUM"
     
-    def _detect_sky(self, image: np.ndarray, mask: np.ndarray, 
-                   exposure_category: str) -> np.ndarray:
+    def _detect_sky(self, image: np.ndarray, exposure_category: str) -> np.ndarray:
         """Enhanced sky detection with multiple strategies."""
         hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv_image)
@@ -369,7 +443,7 @@ class CanopyAnalyzer:
         bright_areas = v > thresholds['bright_val_threshold']
         
         # Combine all strategies
-        sky_mask = (blue_sky | white_sky | bright_areas) & (mask > 0)
+        sky_mask = blue_sky | white_sky | bright_areas
         
         # Clean up the mask
         kernel = np.ones((5,5), np.uint8)

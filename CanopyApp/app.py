@@ -9,7 +9,7 @@ import logging
 from multiprocessing import freeze_support
 from pathlib import Path
 
-from CanopyApp.gui.main_window import MainWindow
+from CanopyApp.gui.views.main_window_view import MainWindowView
 from CanopyApp.processing.utils import setup_logging
 
 def main():
@@ -25,7 +25,7 @@ def main():
         Path('processed_images').mkdir(exist_ok=True)
         
         # Initialize and run the GUI
-        app = MainWindow()
+        app = MainWindowView()
         app.run()
         
     except Exception as e:
