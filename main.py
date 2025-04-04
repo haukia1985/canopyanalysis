@@ -418,8 +418,8 @@ class CanopyAnalyzer:
             self.classification_label.config(foreground="black")
     
     def save_results(self):
-        if not self.batch_results:
-            messagebox.showinfo("No Results", "No results to save.")
+        if not self.batch_file_list:
+            messagebox.showinfo("No Results", "No batch loaded. Please load an image folder first.")
             return
             
         # Ask for save location
@@ -431,7 +431,26 @@ class CanopyAnalyzer:
         
         if not save_path:
             return
-            
+        
+        # Inform user that processing is starting
+        messagebox.showinfo("Processing Batch", "Processing all images in folder. This may take a moment...")
+        
+        # Process all images in the batch that haven't been processed yet
+        for file_path in self.batch_file_list:
+            if file_path not in self.batch_results:
+                # Process the image with default center
+                image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center = process_single_image(file_path)
+                
+                if image is not None:
+                    # Store results in batch dictionary
+                    self.batch_results[file_path] = {
+                        "classification": classification,
+                        "avg_brightness": avg_brightness,
+                        "white_percent": white_percent,
+                        "bright_percent": bright_percent,
+                        "mask_center": center
+                    }
+        
         # Prepare results for saving
         results_to_save = {}
         for file_path, result in self.batch_results.items():
@@ -441,14 +460,18 @@ class CanopyAnalyzer:
                 "classification": result["classification"],
                 "avg_brightness": float(result["avg_brightness"]),
                 "white_percent": float(result["white_percent"]),
-                "bright_percent": float(result["bright_percent"])
+                "bright_percent": float(result["bright_percent"]),
+                "mask_center": {
+                    "x": int(result["mask_center"][0]) if "mask_center" in result else None,
+                    "y": int(result["mask_center"][1]) if "mask_center" in result else None
+                }
             }
             
         # Save to JSON file
         try:
             with open(save_path, 'w') as f:
                 json.dump(results_to_save, f, indent=4)
-            messagebox.showinfo("Save Successful", f"Results saved to {save_path}")
+            messagebox.showinfo("Save Successful", f"All {len(results_to_save)} images processed and results saved to {save_path}")
         except Exception as e:
             messagebox.showerror("Save Error", f"Error saving results: {str(e)}")
     
