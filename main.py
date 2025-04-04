@@ -75,8 +75,13 @@ def classify_image_brightness(masked_img, mask):
     
     return classification, avg_brightness, very_bright_percent, bright_percent
 
-def process_single_image(image_path):
-    """Process a single image and return classification results"""
+def process_single_image(image_path, custom_center=None):
+    """Process a single image and return classification results
+    
+    Args:
+        image_path: Path to the image file
+        custom_center: Optional tuple (x, y) for custom mask center position
+    """
     image = cv2.imread(image_path)
     if image is None:
         return None, "Error loading image", 0, 0, 0, None, None
@@ -85,17 +90,28 @@ def process_single_image(image_path):
     h, w = image.shape[:2]
     
     # Create circular mask using config for radius percentage
-    center = (w // 2, h // 2)
+    if custom_center is None:
+        center = (w // 2, h // 2)  # Default to center of image
+    else:
+        center = custom_center
+        
     radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
     mask = create_circular_mask(h, w, center, radius)
     
     # Apply mask to image
     masked_image = cv2.bitwise_and(image, image, mask=mask)
     
+    # Create a display image with visible mask boundary
+    display_image = image.copy()
+    # Draw circle boundary in red
+    cv2.circle(display_image, center, radius, (0, 0, 255), 2)
+    # Draw center point
+    cv2.circle(display_image, center, 5, (0, 0, 255), -1)
+    
     # Classify image brightness
     classification, avg_brightness, white_percent, bright_percent = classify_image_brightness(masked_image, mask)
     
-    return image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask
+    return image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center
 
 class CanopyAnalyzer:
     def __init__(self, root):
@@ -178,9 +194,19 @@ class CanopyAnalyzer:
         self.image_label = ttk.Label(self.image_frame)
         self.image_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        # Bind click event to image label
+        self.image_label.bind("<Button-1>", self.on_image_click)
+        
         self.current_image = None
         self.processed_image = None
         self.current_file_path = None
+        self.original_image = None
+        self.current_display_info = {"image_width": 0, "image_height": 0, "scale": 1.0, "offset_x": 0, "offset_y": 0}
+        
+        # Instructions label for image clicking
+        self.instructions_label = ttk.Label(self.image_frame, 
+                                         text="Click on the image to reposition the analysis mask")
+        self.instructions_label.pack(side=tk.BOTTOM, pady=5)
         
     def load_image(self):
         file_path = filedialog.askopenfilename(
@@ -235,30 +261,55 @@ class CanopyAnalyzer:
         if file_path in self.batch_results:
             # Use cached results
             result = self.batch_results[file_path]
-            self.update_display(result["classification"], result["avg_brightness"], 
-                               result["white_percent"], result["bright_percent"], 
-                               result["masked_image"], file_path)
+            
+            # Check if we have the display image with mask
+            if "display_image" in result:
+                display_image = result["display_image"]
+                # If we have a custom center, use it
+                custom_center = result.get("mask_center", None)
+                self.update_display(
+                    result["classification"], 
+                    result["avg_brightness"], 
+                    result["white_percent"], 
+                    result["bright_percent"], 
+                    display_image,
+                    file_path,
+                    custom_center
+                )
+            else:
+                # Process the image with the original image to get the display image
+                self.process_image_with_center(file_path)
         else:
-            # Process the image
-            image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask = process_single_image(file_path)
-            
-            if image is None:
-                messagebox.showerror("Error", f"Could not load image: {file_path}")
-                return
-                
-            # Store results in batch dictionary
-            self.batch_results[file_path] = {
-                "classification": classification,
-                "avg_brightness": avg_brightness,
-                "white_percent": white_percent,
-                "bright_percent": bright_percent,
-                "masked_image": masked_image
-            }
-            
-            # Update display with the results
-            self.update_display(classification, avg_brightness, white_percent, bright_percent, masked_image, file_path)
+            # Process the image with default center
+            self.process_image_with_center(file_path)
     
-    def update_display(self, classification, avg_brightness, white_percent, bright_percent, masked_image, file_path):
+    def process_image_with_center(self, file_path, custom_center=None):
+        """Process an image with optional custom center point"""
+        # Process the image
+        image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center = process_single_image(file_path, custom_center)
+        
+        if image is None:
+            messagebox.showerror("Error", f"Could not load image: {file_path}")
+            return
+                
+        # Store original image for reprocessing with different mask centers
+        self.original_image = image
+                
+        # Store results in batch dictionary
+        self.batch_results[file_path] = {
+            "classification": classification,
+            "avg_brightness": avg_brightness,
+            "white_percent": white_percent,
+            "bright_percent": bright_percent,
+            "masked_image": masked_image,
+            "display_image": display_image,
+            "mask_center": center
+        }
+            
+        # Update display with the results
+        self.update_display(classification, avg_brightness, white_percent, bright_percent, display_image, file_path, center)
+    
+    def update_display(self, classification, avg_brightness, white_percent, bright_percent, display_image, file_path, center=None):
         # Update classification display
         self.classification_label.config(text=f"Classification: {classification}")
         
@@ -272,11 +323,44 @@ class CanopyAnalyzer:
         # Update file name display
         self.file_name_label.config(text=f"File: {os.path.basename(file_path)}")
         
-        # Display the masked image
-        self.display_image(masked_image)
+        # Display the image with mask overlay
+        self.display_image(display_image)
         
         # Set the classification dropdown to the current classification
         self.classification_var.set(classification)
+    
+    def on_image_click(self, event):
+        """Handle click on the image to reposition mask"""
+        if not self.current_file_path or self.original_image is None:
+            return
+        
+        # Get the actual image dimensions from the original image
+        orig_height, orig_width = self.original_image.shape[:2]
+        
+        # Get the display info that was saved during display_image
+        display_info = self.current_display_info
+        
+        # Account for the padding in the label widget
+        display_x = event.x - display_info["offset_x"]
+        display_y = event.y - display_info["offset_y"]
+        
+        # Check if click is within the bounds of the displayed image
+        if (display_x < 0 or display_x >= display_info["image_width"] or 
+            display_y < 0 or display_y >= display_info["image_height"]):
+            return  # Click is outside the image bounds
+        
+        # Convert display coordinates to original image coordinates
+        scale = display_info["scale"]
+        orig_x = int(display_x / scale)
+        orig_y = int(display_y / scale)
+        
+        # Ensure coordinates are within the original image bounds
+        orig_x = max(0, min(orig_width - 1, orig_x))
+        orig_y = max(0, min(orig_height - 1, orig_y))
+        
+        # Set the new center point and reprocess
+        new_center = (orig_x, orig_y)
+        self.process_image_with_center(self.current_file_path, new_center)
     
     def next_image(self):
         if self.current_batch_index < len(self.batch_file_list) - 1:
@@ -357,11 +441,12 @@ class CanopyAnalyzer:
         else:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
-        # Resize image to fit display
-        height, width = image.shape[:2]
+        # Get the original image dimensions
+        orig_height, orig_width = image.shape[:2]
+            
         # Get the size of the image frame
-        frame_width = self.image_frame.winfo_width()
-        frame_height = self.image_frame.winfo_height()
+        frame_width = self.image_label.winfo_width()
+        frame_height = self.image_label.winfo_height()
         
         # If frame isn't ready yet, use default size
         if frame_width <= 1:
@@ -370,13 +455,29 @@ class CanopyAnalyzer:
             frame_height = 400
             
         # Calculate scale to fit in frame while maintaining aspect ratio
-        scale_width = (frame_width - 20) / width
-        scale_height = (frame_height - 20) / height
+        scale_width = frame_width / orig_width
+        scale_height = frame_height / orig_height
         scale = min(scale_width, scale_height)
         
-        if scale < 1:  # Only resize if image is larger than display area
-            new_width = int(width * scale)
-            new_height = int(height * scale)
+        # Calculate the size of the displayed image
+        new_width = int(orig_width * scale)
+        new_height = int(orig_height * scale)
+        
+        # Calculate padding to center the image in the label
+        padding_x = (frame_width - new_width) // 2
+        padding_y = (frame_height - new_height) // 2
+        
+        # Store the display information for coordinate translation during clicks
+        self.current_display_info = {
+            "image_width": new_width,
+            "image_height": new_height,
+            "scale": scale,
+            "offset_x": padding_x,
+            "offset_y": padding_y
+        }
+        
+        # Resize the image for display
+        if scale != 1.0:
             image = cv2.resize(image, (new_width, new_height))
             
         # Convert to PhotoImage
