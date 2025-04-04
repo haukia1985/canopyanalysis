@@ -103,8 +103,8 @@ def process_single_image(image_path, custom_center=None):
     
     # Create a display image with visible mask boundary
     display_image = image.copy()
-    # Draw circle boundary in red
-    cv2.circle(display_image, center, radius, (0, 0, 255), 2)
+    # Draw circle boundary in red with increased thickness (4 pixels instead of 2)
+    cv2.circle(display_image, center, radius, (0, 0, 255), 4)
     # Draw center point
     cv2.circle(display_image, center, 5, (0, 0, 255), -1)
     
@@ -184,6 +184,11 @@ class CanopyAnalyzer:
         # Bind the combobox selection event to automatically apply classification
         self.class_combo.bind("<<ComboboxSelected>>", self.on_classification_changed)
         
+        # Add reset center point button
+        self.reset_center_button = ttk.Button(self.class_frame, text="Reset Center Point", 
+                                             command=self.reset_mask_center)
+        self.reset_center_button.pack(side=tk.LEFT, padx=5, pady=5)
+        
         self.save_all_button = ttk.Button(self.class_frame, text="Save All Results", command=self.save_results)
         self.save_all_button.pack(side=tk.RIGHT, padx=5, pady=5)
         
@@ -197,11 +202,18 @@ class CanopyAnalyzer:
         # Bind click event to image label
         self.image_label.bind("<Button-1>", self.on_image_click)
         
+        # Bind configure event to the image_frame to track resizing
+        self.image_frame.bind("<Configure>", self.on_frame_resize)
+        
         self.current_image = None
         self.processed_image = None
         self.current_file_path = None
         self.original_image = None
-        self.current_display_info = {"image_width": 0, "image_height": 0, "scale": 1.0, "offset_x": 0, "offset_y": 0}
+        self.current_display_info = {"image_width": 0, "image_height": 0, "frame_width": 0, "frame_height": 0, "scale": 1.0, "offset_x": 0, "offset_y": 0, "orig_width": 0, "orig_height": 0}
+        # Flag to track if frame was resized
+        self.frame_was_resized = False
+        # Store the last displayed image to avoid resizing issues
+        self.last_displayed_cv_image = None
         
         # Instructions label for image clicking
         self.instructions_label = ttk.Label(self.image_frame, 
@@ -334,20 +346,24 @@ class CanopyAnalyzer:
         if not self.current_file_path or self.original_image is None:
             return
         
-        # Get the actual image dimensions from the original image
-        orig_height, orig_width = self.original_image.shape[:2]
-        
-        # Get the display info that was saved during display_image
+        # Get the display info
         display_info = self.current_display_info
         
-        # Account for the padding in the label widget
-        display_x = event.x - display_info["offset_x"]
-        display_y = event.y - display_info["offset_y"]
+        # Calculate the actual display area of the image (without padding)
+        image_area_x1 = display_info["offset_x"]
+        image_area_y1 = display_info["offset_y"]
+        image_area_x2 = image_area_x1 + display_info["image_width"]
+        image_area_y2 = image_area_y1 + display_info["image_height"]
         
         # Check if click is within the bounds of the displayed image
-        if (display_x < 0 or display_x >= display_info["image_width"] or 
-            display_y < 0 or display_y >= display_info["image_height"]):
+        if (event.x < image_area_x1 or event.x >= image_area_x2 or 
+            event.y < image_area_y1 or event.y >= image_area_y2):
+            print(f"Click at ({event.x}, {event.y}) is outside image area ({image_area_x1},{image_area_y1}) to ({image_area_x2},{image_area_y2})")
             return  # Click is outside the image bounds
+        
+        # Calculate position within the scaled image
+        display_x = event.x - image_area_x1
+        display_y = event.y - image_area_y1
         
         # Convert display coordinates to original image coordinates
         scale = display_info["scale"]
@@ -355,8 +371,10 @@ class CanopyAnalyzer:
         orig_y = int(display_y / scale)
         
         # Ensure coordinates are within the original image bounds
-        orig_x = max(0, min(orig_width - 1, orig_x))
-        orig_y = max(0, min(orig_height - 1, orig_y))
+        orig_x = max(0, min(display_info["orig_width"] - 1, orig_x))
+        orig_y = max(0, min(display_info["orig_height"] - 1, orig_y))
+        
+        print(f"Click at ({event.x}, {event.y}) -> Image coordinates: ({orig_x}, {orig_y})")
         
         # Set the new center point and reprocess
         new_center = (orig_x, orig_y)
@@ -434,7 +452,19 @@ class CanopyAnalyzer:
         except Exception as e:
             messagebox.showerror("Save Error", f"Error saving results: {str(e)}")
     
-    def display_image(self, image):
+    def on_frame_resize(self, event):
+        """Handle resize event on the image frame"""
+        # Set flag when frame is resized
+        self.frame_was_resized = True
+        
+        # If we have an image loaded, redisplay it with the new frame size
+        if self.last_displayed_cv_image is not None:
+            self.display_image(self.last_displayed_cv_image, force_resize=True)
+    
+    def display_image(self, image, force_resize=False):
+        # Store the OpenCV image for potential redisplay
+        self.last_displayed_cv_image = image.copy()
+        
         # Convert OpenCV image to PIL format
         if len(image.shape) == 2:  # Grayscale
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
@@ -443,17 +473,30 @@ class CanopyAnalyzer:
             
         # Get the original image dimensions
         orig_height, orig_width = image.shape[:2]
-            
-        # Get the size of the image frame
-        frame_width = self.image_label.winfo_width()
-        frame_height = self.image_label.winfo_height()
         
-        # If frame isn't ready yet, use default size
-        if frame_width <= 1:
-            frame_width = 800
-        if frame_height <= 1:
-            frame_height = 400
+        # Only update frame dimensions if this is first display or a resize occurred
+        if force_resize or self.frame_was_resized or self.current_display_info["frame_width"] <= 1:
+            # Get the size of the image frame
+            frame_width = self.image_label.winfo_width()
+            frame_height = self.image_label.winfo_height()
             
+            # If frame isn't ready yet, use default size
+            if frame_width <= 1:
+                frame_width = 800
+            if frame_height <= 1:
+                frame_height = 400
+                
+            # Update the frame dimensions in display info
+            self.current_display_info["frame_width"] = frame_width
+            self.current_display_info["frame_height"] = frame_height
+            
+            # Reset the resize flag
+            self.frame_was_resized = False
+        else:
+            # Use the existing frame dimensions
+            frame_width = self.current_display_info["frame_width"]
+            frame_height = self.current_display_info["frame_height"]
+        
         # Calculate scale to fit in frame while maintaining aspect ratio
         scale_width = frame_width / orig_width
         scale_height = frame_height / orig_height
@@ -467,26 +510,49 @@ class CanopyAnalyzer:
         padding_x = (frame_width - new_width) // 2
         padding_y = (frame_height - new_height) // 2
         
-        # Store the display information for coordinate translation during clicks
-        self.current_display_info = {
+        # Resize the image for display
+        if scale != 1.0:
+            display_img = cv2.resize(image, (new_width, new_height))
+        else:
+            display_img = image.copy()
+            
+        # Convert to PIL Image
+        pil_img = Image.fromarray(display_img)
+        
+        # Create a new blank image with the full frame size (including padding)
+        full_img = Image.new('RGB', (frame_width, frame_height), color=(240, 240, 240))
+        
+        # Paste the resized image into the center of the blank image
+        full_img.paste(pil_img, (padding_x, padding_y))
+        
+        # Convert to PhotoImage
+        photo = ImageTk.PhotoImage(full_img)
+        
+        # Update display information for coordinate translation during clicks
+        self.current_display_info.update({
             "image_width": new_width,
             "image_height": new_height,
             "scale": scale,
             "offset_x": padding_x,
-            "offset_y": padding_y
-        }
-        
-        # Resize the image for display
-        if scale != 1.0:
-            image = cv2.resize(image, (new_width, new_height))
-            
-        # Convert to PhotoImage
-        image = Image.fromarray(image)
-        photo = ImageTk.PhotoImage(image)
+            "offset_y": padding_y,
+            "orig_width": orig_width,
+            "orig_height": orig_height
+        })
         
         # Update display
         self.image_label.configure(image=photo)
         self.image_label.image = photo  # Keep a reference
+        
+        # Force update to ensure correct sizing
+        self.root.update_idletasks()
+
+    def reset_mask_center(self):
+        """Reset the mask center to the center of the image"""
+        if not self.current_file_path or self.original_image is None:
+            return
+            
+        # Process the image with default center (None will use image center)
+        self.process_image_with_center(self.current_file_path, None)
 
 def main():
     root = tk.Tk()
