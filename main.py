@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Simple Canopy Cover Analysis Application
+Simple Canopy Cover Analysis Application with Batch Processing
 """
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 import os
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
 import config
+from tkinter import messagebox
+import json
 
 def create_circular_mask(h, w, center, radius):
     """Create a circular mask with the given dimensions and parameters."""
@@ -19,7 +21,7 @@ def create_circular_mask(h, w, center, radius):
     return mask.astype(np.uint8) * 255
 
 def classify_image_brightness(masked_img, mask):
-    """Classify image into low, medium, bright, or overexposed based on brightness thresholds."""
+    """Classify image into low, medium, or bright based on brightness thresholds."""
     # Convert to grayscale for brightness analysis
     gray = cv2.cvtColor(masked_img, cv2.COLOR_BGR2GRAY)
     
@@ -58,13 +60,12 @@ def classify_image_brightness(masked_img, mask):
     medium_percent = (medium_pixels / total_pixels) * 100
     dark_percent = (dark_pixels / total_pixels) * 100
     
-    # Check if image is overexposed (using config threshold)
-    if avg_brightness > config.OVEREXPOSED_AVG_BRIGHTNESS:
-        classification = "Overexposed Sky"
-    # If not overexposed, use the standard classification logic from config
-    elif (very_bright_percent > config.BRIGHT_SKY_VERY_BRIGHT_PERCENT or 
-          avg_brightness > config.BRIGHT_SKY_AVG_BRIGHTNESS or 
-          (very_bright_percent + bright_percent) > config.BRIGHT_SKY_COMBINED_BRIGHT_PERCENT):
+    # Simplified classification - now only three categories
+    # Check if image is bright (including previously overexposed)
+    if (avg_brightness > config.OVEREXPOSED_AVG_BRIGHTNESS or
+        very_bright_percent > config.BRIGHT_SKY_VERY_BRIGHT_PERCENT or 
+        avg_brightness > config.BRIGHT_SKY_AVG_BRIGHTNESS or 
+        (very_bright_percent + bright_percent) > config.BRIGHT_SKY_COMBINED_BRIGHT_PERCENT):
         classification = "Bright Sky"
     elif (medium_percent > config.MEDIUM_SKY_MEDIUM_PERCENT or 
           (config.MEDIUM_SKY_MIN_AVG_BRIGHTNESS <= avg_brightness <= config.MEDIUM_SKY_MAX_AVG_BRIGHTNESS)):
@@ -74,80 +75,280 @@ def classify_image_brightness(masked_img, mask):
     
     return classification, avg_brightness, very_bright_percent, bright_percent
 
+def process_single_image(image_path):
+    """Process a single image and return classification results"""
+    image = cv2.imread(image_path)
+    if image is None:
+        return None, "Error loading image", 0, 0, 0, None, None
+    
+    # Get image dimensions
+    h, w = image.shape[:2]
+    
+    # Create circular mask using config for radius percentage
+    center = (w // 2, h // 2)
+    radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
+    mask = create_circular_mask(h, w, center, radius)
+    
+    # Apply mask to image
+    masked_image = cv2.bitwise_and(image, image, mask=mask)
+    
+    # Classify image brightness
+    classification, avg_brightness, white_percent, bright_percent = classify_image_brightness(masked_image, mask)
+    
+    return image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask
+
 class CanopyAnalyzer:
     def __init__(self, root):
         self.root = root
         self.root.title("Canopy Cover Analysis - Image Classification")
+        self.root.geometry("1000x700")
+        
+        # Data structures for batch processing
+        self.batch_results = {}  # Dict to store all results {filepath: {results...}}
+        self.current_batch_index = 0
+        self.batch_file_list = []
         
         # Create main frame
         self.main_frame = ttk.Frame(root, padding="10")
-        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Create load button
-        self.load_button = ttk.Button(self.main_frame, text="Load Image", command=self.load_image)
-        self.load_button.grid(row=0, column=0, padx=5, pady=5)
+        # Create button frame
+        self.button_frame = ttk.Frame(self.main_frame)
+        self.button_frame.pack(fill=tk.X, pady=5)
+        
+        # Create load buttons
+        self.load_button = ttk.Button(self.button_frame, text="Load Single Image", command=self.load_image)
+        self.load_button.pack(side=tk.LEFT, padx=5)
+        
+        self.load_batch_button = ttk.Button(self.button_frame, text="Load Image Folder", command=self.load_batch)
+        self.load_batch_button.pack(side=tk.LEFT, padx=5)
+        
+        # Create info frame for classification details
+        self.info_frame = ttk.LabelFrame(self.main_frame, text="Classification Details")
+        self.info_frame.pack(fill=tk.X, pady=5)
         
         # Create classification display labels
-        self.classification_label = ttk.Label(self.main_frame, text="Classification: --", font=("Arial", 12, "bold"))
-        self.classification_label.grid(row=1, column=0, pady=5)
+        self.classification_label = ttk.Label(self.info_frame, text="Classification: --", font=("Arial", 12, "bold"))
+        self.classification_label.grid(row=0, column=0, padx=10, pady=5, sticky=tk.W)
         
-        self.brightness_label = ttk.Label(self.main_frame, text="Average Brightness: --")
-        self.brightness_label.grid(row=2, column=0, pady=2)
+        self.brightness_label = ttk.Label(self.info_frame, text="Average Brightness: --")
+        self.brightness_label.grid(row=1, column=0, padx=10, pady=2, sticky=tk.W)
         
-        self.white_pixels_label = ttk.Label(self.main_frame, text="White Pixels (>250): --")
-        self.white_pixels_label.grid(row=3, column=0, pady=2)
+        self.white_pixels_label = ttk.Label(self.info_frame, text="White Pixels (>250): --")
+        self.white_pixels_label.grid(row=2, column=0, padx=10, pady=2, sticky=tk.W)
         
-        self.bright_pixels_label = ttk.Label(self.main_frame, text="Bright Pixels (200-250): --")
-        self.bright_pixels_label.grid(row=4, column=0, pady=2)
+        self.bright_pixels_label = ttk.Label(self.info_frame, text="Bright Pixels (200-250): --")
+        self.bright_pixels_label.grid(row=3, column=0, padx=10, pady=2, sticky=tk.W)
+        
+        self.file_name_label = ttk.Label(self.info_frame, text="File: --")
+        self.file_name_label.grid(row=0, column=1, padx=10, pady=5, sticky=tk.W)
+        
+        self.file_count_label = ttk.Label(self.info_frame, text="Image: -- / --")
+        self.file_count_label.grid(row=1, column=1, padx=10, pady=2, sticky=tk.W)
+        
+        # Create batch navigation frame
+        self.nav_frame = ttk.Frame(self.main_frame)
+        self.nav_frame.pack(fill=tk.X, pady=5)
+        
+        self.prev_button = ttk.Button(self.nav_frame, text="Previous", command=self.prev_image, state=tk.DISABLED)
+        self.prev_button.pack(side=tk.LEFT, padx=5)
+        
+        self.next_button = ttk.Button(self.nav_frame, text="Next", command=self.next_image, state=tk.DISABLED)
+        self.next_button.pack(side=tk.LEFT, padx=5)
+        
+        # Classification override options
+        self.class_frame = ttk.LabelFrame(self.main_frame, text="Override Classification")
+        self.class_frame.pack(fill=tk.X, pady=5)
+        
+        self.classification_var = tk.StringVar()
+        self.class_combo = ttk.Combobox(self.class_frame, textvariable=self.classification_var)
+        self.class_combo['values'] = ('Bright Sky', 'Medium Sky', 'Low Sky')
+        self.class_combo.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Bind the combobox selection event to automatically apply classification
+        self.class_combo.bind("<<ComboboxSelected>>", self.on_classification_changed)
+        
+        self.save_all_button = ttk.Button(self.class_frame, text="Save All Results", command=self.save_results)
+        self.save_all_button.pack(side=tk.RIGHT, padx=5, pady=5)
         
         # Create image display area
-        self.image_label = ttk.Label(self.main_frame)
-        self.image_label.grid(row=5, column=0, pady=10)
+        self.image_frame = ttk.LabelFrame(self.main_frame, text="Image Preview")
+        self.image_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.image_label = ttk.Label(self.image_frame)
+        self.image_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         self.current_image = None
         self.processed_image = None
+        self.current_file_path = None
         
     def load_image(self):
-        from tkinter import filedialog
         file_path = filedialog.askopenfilename(
             filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")]
         )
         if file_path:
-            # Load the image
-            self.current_image = cv2.imread(file_path)
+            self.process_and_display_image(file_path)
+            # Reset batch navigation
+            self.batch_file_list = [file_path]
+            self.current_batch_index = 0
+            self.file_count_label.config(text=f"Image: 1 / 1")
+            self.prev_button.config(state=tk.DISABLED)
+            self.next_button.config(state=tk.DISABLED)
+    
+    def load_batch(self):
+        folder_path = filedialog.askdirectory(title="Select Folder with Images")
+        if not folder_path:
+            return
             
-            # Get image dimensions
-            h, w = self.current_image.shape[:2]
+        # Get list of image files
+        image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff')
+        image_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) 
+                     if os.path.isfile(os.path.join(folder_path, f)) and 
+                     f.lower().endswith(image_extensions)]
+        
+        if not image_files:
+            messagebox.showinfo("No Images", "No image files found in the selected folder.")
+            return
             
-            # Create circular mask using config for radius percentage
-            center = (w // 2, h // 2)
-            radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
-            mask = create_circular_mask(h, w, center, radius)
+        # Sort files by name
+        image_files.sort()
+        
+        # Reset batch variables
+        self.batch_file_list = image_files
+        self.current_batch_index = 0
+        self.batch_results = {}
+        
+        # Process and display first image
+        if self.batch_file_list:
+            self.process_and_display_image(self.batch_file_list[0])
             
-            # Apply mask to image
-            masked_image = cv2.bitwise_and(self.current_image, self.current_image, mask=mask)
+            # Update navigation buttons
+            self.update_nav_buttons()
             
-            # Classify image brightness
-            classification, avg_brightness, white_percent, bright_percent = classify_image_brightness(masked_image, mask)
+            # Update file count
+            self.file_count_label.config(text=f"Image: 1 / {len(self.batch_file_list)}")
+    
+    def process_and_display_image(self, file_path):
+        self.current_file_path = file_path
+        
+        # Check if we've already processed this image
+        if file_path in self.batch_results:
+            # Use cached results
+            result = self.batch_results[file_path]
+            self.update_display(result["classification"], result["avg_brightness"], 
+                               result["white_percent"], result["bright_percent"], 
+                               result["masked_image"], file_path)
+        else:
+            # Process the image
+            image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask = process_single_image(file_path)
             
-            # Update classification display
-            self.classification_label.config(text=f"Classification: {classification}")
-            
-            # Set text color to red for overexposed classification
-            if classification == "Overexposed Sky":
-                self.classification_label.config(foreground="red")
-            else:
-                self.classification_label.config(foreground="black")
+            if image is None:
+                messagebox.showerror("Error", f"Could not load image: {file_path}")
+                return
                 
-            self.brightness_label.config(text=f"Average Brightness: {avg_brightness:.1f}")
-            self.white_pixels_label.config(text=f"White Pixels (>{config.VERY_BRIGHT_THRESHOLD}): {white_percent:.1f}%")
-            self.bright_pixels_label.config(text=f"Bright Pixels ({config.BRIGHT_THRESHOLD}-{config.VERY_BRIGHT_THRESHOLD}): {bright_percent:.1f}%")
+            # Store results in batch dictionary
+            self.batch_results[file_path] = {
+                "classification": classification,
+                "avg_brightness": avg_brightness,
+                "white_percent": white_percent,
+                "bright_percent": bright_percent,
+                "masked_image": masked_image
+            }
             
-            # Store processed image
-            self.processed_image = masked_image
+            # Update display with the results
+            self.update_display(classification, avg_brightness, white_percent, bright_percent, masked_image, file_path)
+    
+    def update_display(self, classification, avg_brightness, white_percent, bright_percent, masked_image, file_path):
+        # Update classification display
+        self.classification_label.config(text=f"Classification: {classification}")
+        
+        # No special coloring for any classification now that we've merged categories
+        self.classification_label.config(foreground="black")
             
-            # Display the masked image
-            self.display_image(masked_image)
+        self.brightness_label.config(text=f"Average Brightness: {avg_brightness:.1f}")
+        self.white_pixels_label.config(text=f"White Pixels (>{config.VERY_BRIGHT_THRESHOLD}): {white_percent:.1f}%")
+        self.bright_pixels_label.config(text=f"Bright Pixels ({config.BRIGHT_THRESHOLD}-{config.VERY_BRIGHT_THRESHOLD}): {bright_percent:.1f}%")
+        
+        # Update file name display
+        self.file_name_label.config(text=f"File: {os.path.basename(file_path)}")
+        
+        # Display the masked image
+        self.display_image(masked_image)
+        
+        # Set the classification dropdown to the current classification
+        self.classification_var.set(classification)
+    
+    def next_image(self):
+        if self.current_batch_index < len(self.batch_file_list) - 1:
+            self.current_batch_index += 1
+            self.process_and_display_image(self.batch_file_list[self.current_batch_index])
+            self.file_count_label.config(text=f"Image: {self.current_batch_index + 1} / {len(self.batch_file_list)}")
+            self.update_nav_buttons()
+    
+    def prev_image(self):
+        if self.current_batch_index > 0:
+            self.current_batch_index -= 1
+            self.process_and_display_image(self.batch_file_list[self.current_batch_index])
+            self.file_count_label.config(text=f"Image: {self.current_batch_index + 1} / {len(self.batch_file_list)}")
+            self.update_nav_buttons()
+    
+    def update_nav_buttons(self):
+        # Enable/disable navigation buttons based on current position
+        self.prev_button.config(state=tk.NORMAL if self.current_batch_index > 0 else tk.DISABLED)
+        self.next_button.config(state=tk.NORMAL if self.current_batch_index < len(self.batch_file_list) - 1 else tk.DISABLED)
+    
+    def on_classification_changed(self, event=None):
+        """Handle classification dropdown change event"""
+        if not self.current_file_path or not self.batch_results:
+            return
+            
+        # Get the selected classification
+        new_classification = self.classification_var.get()
+        
+        # Update the classification in the results dictionary
+        if self.current_file_path in self.batch_results:
+            self.batch_results[self.current_file_path]["classification"] = new_classification
+            
+            # Update the display
+            self.classification_label.config(text=f"Classification: {new_classification}")
+            
+            # No special coloring now
+            self.classification_label.config(foreground="black")
+    
+    def save_results(self):
+        if not self.batch_results:
+            messagebox.showinfo("No Results", "No results to save.")
+            return
+            
+        # Ask for save location
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")],
+            title="Save Classification Results"
+        )
+        
+        if not save_path:
+            return
+            
+        # Prepare results for saving
+        results_to_save = {}
+        for file_path, result in self.batch_results.items():
+            # Don't save the masked image, just the classification and metrics
+            results_to_save[file_path] = {
+                "file_name": os.path.basename(file_path),
+                "classification": result["classification"],
+                "avg_brightness": float(result["avg_brightness"]),
+                "white_percent": float(result["white_percent"]),
+                "bright_percent": float(result["bright_percent"])
+            }
+            
+        # Save to JSON file
+        try:
+            with open(save_path, 'w') as f:
+                json.dump(results_to_save, f, indent=4)
+            messagebox.showinfo("Save Successful", f"Results saved to {save_path}")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Error saving results: {str(e)}")
     
     def display_image(self, image):
         # Convert OpenCV image to PIL format
@@ -158,9 +359,22 @@ class CanopyAnalyzer:
             
         # Resize image to fit display
         height, width = image.shape[:2]
-        max_size = 800
-        if height > max_size or width > max_size:
-            scale = max_size / max(height, width)
+        # Get the size of the image frame
+        frame_width = self.image_frame.winfo_width()
+        frame_height = self.image_frame.winfo_height()
+        
+        # If frame isn't ready yet, use default size
+        if frame_width <= 1:
+            frame_width = 800
+        if frame_height <= 1:
+            frame_height = 400
+            
+        # Calculate scale to fit in frame while maintaining aspect ratio
+        scale_width = (frame_width - 20) / width
+        scale_height = (frame_height - 20) / height
+        scale = min(scale_width, scale_height)
+        
+        if scale < 1:  # Only resize if image is larger than display area
             new_width = int(width * scale)
             new_height = int(height * scale)
             image = cv2.resize(image, (new_width, new_height))

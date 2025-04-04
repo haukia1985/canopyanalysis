@@ -2,6 +2,7 @@
 """
 Configuration settings for Canopy Cover Analysis Application
 These parameters control the image classification thresholds and can be easily modified.
+The system uses three classification categories: Bright Sky, Medium Sky, and Low Sky.
 """
 
 # Brightness filtering threshold
@@ -15,17 +16,19 @@ MEDIUM_THRESHOLD = 100       # Pixels above this and below BRIGHT_THRESHOLD are 
                              # Pixels below this are counted as "dark"
 
 # Image classification thresholds
-OVEREXPOSED_AVG_BRIGHTNESS = 160  # Images with average brightness above this are classified as "Overexposed Sky"
 
-# Bright Sky classification thresholds (if not overexposed)
-BRIGHT_SKY_VERY_BRIGHT_PERCENT = 20   # If very bright pixels percentage exceeds this
-BRIGHT_SKY_AVG_BRIGHTNESS = 180       # Or if average brightness exceeds this
-BRIGHT_SKY_COMBINED_BRIGHT_PERCENT = 40  # Or if combined very bright + bright pixels percentage exceeds this
+# Bright Sky classification thresholds
+OVEREXPOSED_AVG_BRIGHTNESS = 160  # Images with average brightness above this are classified as "Bright Sky"
+BRIGHT_SKY_VERY_BRIGHT_PERCENT = 20   # If very bright pixels percentage exceeds this, classified as "Bright Sky"
+BRIGHT_SKY_AVG_BRIGHTNESS = 180       # Or if average brightness exceeds this, classified as "Bright Sky"
+BRIGHT_SKY_COMBINED_BRIGHT_PERCENT = 40  # Or if combined very bright + bright pixels percentage exceeds this, classified as "Bright Sky"
 
 # Medium Sky classification thresholds
-MEDIUM_SKY_MEDIUM_PERCENT = 40  # If medium brightness pixels percentage exceeds this
+MEDIUM_SKY_MEDIUM_PERCENT = 40  # If medium brightness pixels percentage exceeds this, classified as "Medium Sky"
 MEDIUM_SKY_MIN_AVG_BRIGHTNESS = 100  # Or if average brightness is at least this
-MEDIUM_SKY_MAX_AVG_BRIGHTNESS = 180  # And average brightness is at most this
+MEDIUM_SKY_MAX_AVG_BRIGHTNESS = 180  # And average brightness is at most this, classified as "Medium Sky"
+
+# Images not meeting Bright or Medium criteria are classified as "Low Sky"
 
 # Circular mask size as percentage of smaller image dimension
 MASK_RADIUS_PERCENT = 25  # 25% of the smaller dimension 
