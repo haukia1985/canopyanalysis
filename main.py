@@ -20,6 +20,82 @@ def create_circular_mask(h, w, center, radius):
     mask = dist_from_center <= radius
     return mask.astype(np.uint8) * 255
 
+def find_json_files(directory):
+    """Find all JSON files in the given directory.
+    
+    Args:
+        directory: Path to the directory to search
+        
+    Returns:
+        List of JSON file paths
+    """
+    json_files = []
+    for file in os.listdir(directory):
+        if file.lower().endswith('.json'):
+            json_files.append(os.path.join(directory, file))
+    return json_files
+
+def load_classification_data(json_files, image_files):
+    """Load classification data from JSON files for the given image files.
+    
+    Args:
+        json_files: List of JSON file paths
+        image_files: List of image file paths
+        
+    Returns:
+        Dictionary mapping image paths to their classification data
+    """
+    classification_data = {}
+    
+    # Try each JSON file
+    for json_file in json_files:
+        try:
+            with open(json_file, 'r') as f:
+                data = json.load(f)
+                
+            # Process each entry in the JSON
+            for file_path, result in data.items():
+                # Check if this is a path or just a filename
+                basename = os.path.basename(file_path)
+                
+                # Find the corresponding full path in image_files
+                matching_files = [img for img in image_files if os.path.basename(img) == basename]
+                if matching_files:
+                    matching_file = matching_files[0]
+                    
+                    # Extract mask center if available
+                    mask_center = None
+                    if "mask_center" in result:
+                        mc = result["mask_center"]
+                        if isinstance(mc, dict) and "x" in mc and "y" in mc:
+                            mask_center = (mc["x"], mc["y"])
+                    # Alternative field names for center coordinates
+                    elif "center_mask" in result:
+                        mc = result["center_mask"]
+                        if isinstance(mc, dict) and "x" in mc and "y" in mc:
+                            mask_center = (mc["x"], mc["y"])
+                    elif "center" in result:
+                        mc = result["center"]
+                        if isinstance(mc, dict) and "x" in mc and "y" in mc:
+                            mask_center = (mc["x"], mc["y"])
+                    
+                    # Get classification/exposure if available
+                    classification = result.get("classification", None)
+                    if not classification:
+                        classification = result.get("exposure", None)
+                    
+                    # Only add if we found useful data
+                    if mask_center or classification:
+                        classification_data[matching_file] = {
+                            "mask_center": mask_center,
+                            "classification": classification
+                        }
+        except Exception as e:
+            # Just log and continue if one JSON fails
+            print(f"Error loading JSON file {json_file}: {str(e)}")
+            
+    return classification_data
+
 def classify_image_brightness(masked_img, mask):
     """Classify image into low, medium, or bright based on brightness thresholds."""
     # Convert to grayscale for brightness analysis
@@ -75,12 +151,13 @@ def classify_image_brightness(masked_img, mask):
     
     return classification, avg_brightness, very_bright_percent, bright_percent
 
-def process_single_image(image_path, custom_center=None):
+def process_single_image(image_path, custom_center=None, custom_classification=None):
     """Process a single image and return classification results
     
     Args:
         image_path: Path to the image file
         custom_center: Optional tuple (x, y) for custom mask center position
+        custom_classification: Optional string to override the automatic classification
     """
     image = cv2.imread(image_path)
     if image is None:
@@ -109,7 +186,10 @@ def process_single_image(image_path, custom_center=None):
     cv2.circle(display_image, center, 5, (0, 0, 255), -1)
     
     # Classify image brightness
-    classification, avg_brightness, white_percent, bright_percent = classify_image_brightness(masked_image, mask)
+    auto_classification, avg_brightness, white_percent, bright_percent = classify_image_brightness(masked_image, mask)
+    
+    # Use custom classification if provided
+    classification = custom_classification if custom_classification else auto_classification
     
     return image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center
 
@@ -251,6 +331,17 @@ class CanopyAnalyzer:
         # Sort files by name
         image_files.sort()
         
+        # Look for JSON files containing classification data
+        json_files = find_json_files(folder_path)
+        self.classification_data = {}
+        
+        if json_files:
+            messagebox.showinfo("Found JSON Files", f"Found {len(json_files)} JSON file(s) in the folder. Checking for previous classification data.")
+            # Load classification data from JSON files
+            self.classification_data = load_classification_data(json_files, image_files)
+            if self.classification_data:
+                messagebox.showinfo("Loaded Data", f"Loaded classification data for {len(self.classification_data)} images.")
+        
         # Reset batch variables
         self.batch_file_list = image_files
         self.current_batch_index = 0
@@ -265,7 +356,7 @@ class CanopyAnalyzer:
             
             # Update file count
             self.file_count_label.config(text=f"Image: 1 / {len(self.batch_file_list)}")
-    
+            
     def process_and_display_image(self, file_path):
         self.current_file_path = file_path
         
@@ -292,13 +383,23 @@ class CanopyAnalyzer:
                 # Process the image with the original image to get the display image
                 self.process_image_with_center(file_path)
         else:
-            # Process the image with default center
-            self.process_image_with_center(file_path)
+            # Check if we have classification data for this image
+            if hasattr(self, 'classification_data') and file_path in self.classification_data:
+                data = self.classification_data[file_path]
+                # Process with the saved mask center and classification
+                self.process_image_with_center(
+                    file_path, 
+                    custom_center=data.get("mask_center", None),
+                    custom_classification=data.get("classification", None)
+                )
+            else:
+                # Process the image with default center
+                self.process_image_with_center(file_path)
     
-    def process_image_with_center(self, file_path, custom_center=None):
-        """Process an image with optional custom center point"""
+    def process_image_with_center(self, file_path, custom_center=None, custom_classification=None):
+        """Process an image with optional custom center point and classification"""
         # Process the image
-        image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center = process_single_image(file_path, custom_center)
+        image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center = process_single_image(file_path, custom_center, custom_classification)
         
         if image is None:
             messagebox.showerror("Error", f"Could not load image: {file_path}")
