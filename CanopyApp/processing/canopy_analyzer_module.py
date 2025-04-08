@@ -20,7 +20,7 @@ class CanopyAnalyzerModule:
             classification: 'Bright Sky', 'Medium Sky', or 'Low Sky'
             
         Returns:
-            Dictionary with analysis results
+            Dictionary with analysis results including sky and canopy masks
         """
         # Load image
         image = cv2.imread(image_path)
@@ -34,7 +34,7 @@ class CanopyAnalyzerModule:
         mask = self.create_circular_mask(h, w, center_point, radius)
         
         # Apply HSV thresholds based on classification
-        sky_pixels, canopy_pixels = self.calculate_canopy_metrics(image, mask, classification)
+        sky_pixels, canopy_pixels, sky_mask, canopy_mask = self.calculate_canopy_metrics(image, mask, classification)
         
         # Calculate canopy percentage
         total_pixels = sky_pixels + canopy_pixels
@@ -47,7 +47,10 @@ class CanopyAnalyzerModule:
             'sky_pixels': sky_pixels,
             'canopy_pixels': canopy_pixels,
             'total_pixels': total_pixels,
-            'canopy_percentage': canopy_percentage
+            'canopy_percentage': canopy_percentage,
+            'sky_mask': sky_mask,
+            'canopy_mask': canopy_mask,
+            'analysis_mask': mask > 0  # Boolean mask of analysis area
         }
     
     def create_circular_mask(self, h, w, center, radius):
@@ -76,58 +79,66 @@ class CanopyAnalyzerModule:
         # For bright skies, focus more on value channel
         sky_mask = (v > self.config.BRIGHT_THRESHOLD) & (mask > 0)
         
+        # Create canopy mask (everything in mask that's not sky)
+        canopy_mask = (mask > 0) & ~sky_mask
+        
         # Count pixels
         sky_pixels = np.sum(sky_mask)
-        canopy_pixels = np.sum((mask > 0) & ~sky_mask)
+        canopy_pixels = np.sum(canopy_mask)
         
-        return sky_pixels, canopy_pixels
+        return sky_pixels, canopy_pixels, sky_mask, canopy_mask
     
     def _medium_sky_thresholds(self, hsv, mask):
         """Apply thresholds for medium sky images"""
         # Extract channels
         h, s, v = cv2.split(hsv)
         
-        # Blue sky: typical blue HSV range
+        # Blue sky: typical blue HSV range using config values
         blue_sky = (
-            (h >= 90) & (h <= 140) &  # Blue hue range
-            (s >= 50) & (s <= 255) &  # Medium-high saturation
-            (v >= 100) & (v <= 255)   # Medium-high value
+            (h >= self.config.BLUE_SKY_HUE_MIN) & (h <= self.config.BLUE_SKY_HUE_MAX) &
+            (s >= self.config.MEDIUM_SKY_BLUE_SAT_MIN) & (s <= 255) &
+            (v >= self.config.MEDIUM_SKY_BLUE_VALUE_MIN) & (v <= 255)
         )
         
-        # White sky: low saturation, high value
+        # White sky: low saturation, high value using config values
         white_sky = (
-            (s <= 30) &  # Low saturation for white
-            (v >= 180)   # High value for white
+            (s <= self.config.MEDIUM_SKY_WHITE_SAT_MAX) &
+            (v >= self.config.MEDIUM_SKY_WHITE_VALUE_MIN)
         )
         
         # Combined sky mask
         sky_mask = (blue_sky | white_sky) & (mask > 0)
         
+        # Create canopy mask (everything in mask that's not sky)
+        canopy_mask = (mask > 0) & ~sky_mask
+        
         # Count pixels
         sky_pixels = np.sum(sky_mask)
-        canopy_pixels = np.sum((mask > 0) & ~sky_mask)
+        canopy_pixels = np.sum(canopy_mask)
         
-        return sky_pixels, canopy_pixels
+        return sky_pixels, canopy_pixels, sky_mask, canopy_mask
     
     def _low_sky_thresholds(self, hsv, mask):
         """Apply thresholds for low sky images"""
         h, s, v = cv2.split(hsv)
         
-        # For low sky, we need to detect even dimmer sky regions
-        # Combination of color and brightness
+        # For low sky, we need to detect even dimmer sky regions using config values
         sky_mask = (
-            ((h >= 90) & (h <= 140) &  # Blue hue
-             (s >= 30) & (s <= 255) &  # Wide saturation range
-             (v >= 80) & (v <= 255))   # Lower value threshold
+            ((h >= self.config.BLUE_SKY_HUE_MIN) & (h <= self.config.BLUE_SKY_HUE_MAX) &
+             (s >= self.config.LOW_SKY_BLUE_SAT_MIN) & (s <= 255) &
+             (v >= self.config.LOW_SKY_BLUE_VALUE_MIN) & (v <= 255))
             |
-            ((s <= 50) & (v >= 120))   # Whitish areas with lower brightness
+            ((s <= self.config.LOW_SKY_WHITE_SAT_MAX) & (v >= self.config.LOW_SKY_WHITE_VALUE_MIN))
         ) & (mask > 0)
+        
+        # Create canopy mask (everything in mask that's not sky)
+        canopy_mask = (mask > 0) & ~sky_mask
         
         # Count pixels
         sky_pixels = np.sum(sky_mask)
-        canopy_pixels = np.sum((mask > 0) & ~sky_mask)
+        canopy_pixels = np.sum(canopy_mask)
         
-        return sky_pixels, canopy_pixels
+        return sky_pixels, canopy_pixels, sky_mask, canopy_mask
     
     def batch_process(self, image_data_dict):
         """

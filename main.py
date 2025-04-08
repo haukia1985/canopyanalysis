@@ -12,6 +12,11 @@ import numpy as np
 import config
 from tkinter import messagebox
 import json
+import csv
+from CanopyApp.processing.canopy_analyzer_module import CanopyAnalyzerModule
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for saving figures
 
 def create_circular_mask(h, w, center, radius):
     """Create a circular mask with the given dimensions and parameters."""
@@ -203,6 +208,8 @@ class CanopyAnalyzer:
         self.batch_results = {}  # Dict to store all results {filepath: {results...}}
         self.current_batch_index = 0
         self.batch_file_list = []
+        self.canopy_results = {}  # Dict to store canopy analysis results
+        self.display_mode = "canopy"  # Always use canopy view
         
         # Create main frame
         self.main_frame = ttk.Frame(root, padding="10")
@@ -271,6 +278,15 @@ class CanopyAnalyzer:
         
         self.save_all_button = ttk.Button(self.class_frame, text="Save All Results", command=self.save_results)
         self.save_all_button.pack(side=tk.RIGHT, padx=5, pady=5)
+        
+        # Add buttons for canopy analysis and export
+        self.process_canopy_button = ttk.Button(self.class_frame, text="Process Canopy Analysis", 
+                                               command=self.process_canopy_analysis)
+        self.process_canopy_button.pack(side=tk.RIGHT, padx=5, pady=5)
+        
+        self.export_visualizations_button = ttk.Button(self.class_frame, text="Export Visualizations", 
+                                                      command=self.export_visualizations, state=tk.DISABLED)
+        self.export_visualizations_button.pack(side=tk.RIGHT, padx=5, pady=5)
         
         # Create image display area
         self.image_frame = ttk.LabelFrame(self.main_frame, text="Image Preview")
@@ -365,6 +381,12 @@ class CanopyAnalyzer:
             # Use cached results
             result = self.batch_results[file_path]
             
+            # If we have canopy results, show those
+            if file_path in self.canopy_results:
+                self.display_canopy_analysis(file_path)
+                return
+                
+            # Otherwise, show classification view
             # Check if we have the display image with mask
             if "display_image" in result:
                 display_image = result["display_image"]
@@ -573,6 +595,13 @@ class CanopyAnalyzer:
             with open(save_path, 'w') as f:
                 json.dump(results_to_save, f, indent=4)
             messagebox.showinfo("Save Successful", f"All {len(results_to_save)} images processed and results saved to {save_path}")
+            # Enable export visualizations button
+            self.export_visualizations_button.config(state=tk.NORMAL)
+            
+            # Display canopy analysis for current image
+            if self.current_file_path:
+                self.display_canopy_analysis(self.current_file_path)
+            
         except Exception as e:
             messagebox.showerror("Save Error", f"Error saving results: {str(e)}")
     
@@ -677,6 +706,431 @@ class CanopyAnalyzer:
             
         # Process the image with default center (None will use image center)
         self.process_image_with_center(self.current_file_path, None)
+        
+    def process_canopy_analysis(self):
+        """Process all images for canopy analysis and save results"""
+        if not self.batch_file_list:
+            messagebox.showinfo("No Batch", "No images loaded. Please load an image folder first.")
+            return
+            
+        # Inform user that processing is starting
+        messagebox.showinfo("Processing", "Analyzing canopy coverage for all images. This may take a moment...")
+        
+        # Process any unprocessed images first to ensure we have all classifications
+        missing_files = [file_path for file_path in self.batch_file_list if file_path not in self.batch_results]
+        if missing_files:
+            for file_path in missing_files:
+                # Process with default parameters
+                self.process_image_with_center(file_path)
+        
+        # Initialize the CanopyAnalyzerModule with config
+        analyzer = CanopyAnalyzerModule(config)
+        
+        # Prepare data for the analyzer
+        image_data_dict = {
+            file_path: {
+                'center_point': self.batch_results[file_path]['mask_center'],
+                'classification': self.batch_results[file_path]['classification']
+            }
+            for file_path in self.batch_results
+        }
+        
+        # Run the analysis
+        self.canopy_results = analyzer.batch_process(image_data_dict)
+        
+        # Ask user where to save the JSON results
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")],
+            title="Save Canopy Analysis Results"
+        )
+        
+        if not save_path:
+            # User cancelled, but still keep results in memory
+            messagebox.showinfo("Analysis Complete", 
+                              "Canopy analysis completed. Results are stored in memory but not saved.")
+            # Enable export button
+            self.export_visualizations_button.config(state=tk.NORMAL)
+            return
+            
+        # Save to JSON file
+        try:
+            # Format results for saving
+            results_to_save = {}
+            for file_path, result in self.canopy_results.items():
+                results_to_save[file_path] = {
+                    'file_name': os.path.basename(file_path),
+                    'classification': result['classification'],
+                    'center_point': {
+                        'x': int(result['center_point'][0]),
+                        'y': int(result['center_point'][1])
+                    },
+                    'sky_pixels': int(result['sky_pixels']),
+                    'canopy_pixels': int(result['canopy_pixels']),
+                    'total_pixels': int(result['total_pixels']),
+                    'canopy_percentage': float(result['canopy_percentage'])
+                }
+                
+            with open(save_path, 'w') as f:
+                json.dump(results_to_save, f, indent=4)
+                
+            messagebox.showinfo("Save Successful", 
+                              f"Canopy analysis completed and results saved to {save_path}")
+            
+            # Enable export visualizations button
+            self.export_visualizations_button.config(state=tk.NORMAL)
+            
+            # Display canopy analysis for current image
+            if self.current_file_path:
+                self.display_canopy_analysis(self.current_file_path)
+            
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Error saving results: {str(e)}")
+            
+    def export_visualizations(self):
+        """Export visualization images and CSV data"""
+        if not hasattr(self, 'canopy_results') or not self.canopy_results:
+            messagebox.showinfo("No Results", "No canopy analysis results available. Please run canopy analysis first.")
+            return
+            
+        # Ask user to select or create output folder
+        output_dir = filedialog.askdirectory(title="Select Output Folder for Visualizations")
+        if not output_dir:
+            return
+            
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Prepare progress reporting
+        total_images = len(self.canopy_results)
+        processed = 0
+        
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Exporting Visualizations")
+        progress_window.geometry("300x100")
+        
+        progress_label = ttk.Label(progress_window, text="Processing images...")
+        progress_label.pack(pady=10)
+        
+        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", 
+                                      length=250, mode="determinate", maximum=total_images)
+        progress_bar.pack(pady=10)
+        
+        progress_window.update()
+        
+        # Prepare data for CSV export
+        csv_data = []
+        
+        # Process each image
+        for file_path, result in self.canopy_results.items():
+            # Update progress
+            processed += 1
+            progress_bar["value"] = processed
+            progress_label.config(text=f"Processing: {os.path.basename(file_path)}")
+            progress_window.update()
+            
+            # Create and save visualization images
+            self.create_and_save_visualization(file_path, result, output_dir)
+            
+            # Calculate additional metrics for CSV
+            image = cv2.imread(file_path)
+            if image is not None:
+                hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+                
+                # Create mask for the analysis area
+                h, w = image.shape[:2]
+                radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
+                center = result['center_point']
+                
+                # Create circular mask
+                Y, X = np.ogrid[:h, :w]
+                dist_from_center = np.sqrt((X - center[0])**2 + (Y - center[1])**2)
+                mask = dist_from_center <= radius
+                
+                # Calculate HSV averages for the masked area
+                h_channel, s_channel, v_channel = cv2.split(hsv)
+                
+                # Only consider pixels within the mask
+                h_values = h_channel[mask]
+                s_values = s_channel[mask]
+                v_values = v_channel[mask]
+                
+                if len(h_values) > 0:
+                    avg_hue = np.mean(h_values)
+                    avg_saturation = np.mean(s_values)
+                    avg_value = np.mean(v_values)
+                    
+                    # Convert BGR to grayscale for brightness
+                    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                    brightness_values = gray[mask]
+                    avg_brightness = np.mean(brightness_values)
+                    
+                    # Add data to CSV records
+                    csv_data.append({
+                        'image_path': file_path,
+                        'center': [center[0], center[1]],
+                        'avg_hue': avg_hue,
+                        'avg_saturation': avg_saturation,
+                        'avg_value': avg_value,
+                        'avg_brightness': avg_brightness,
+                        'total_pixels': result['total_pixels'],
+                        'sky_pixels': result['sky_pixels'],
+                        'canopy_pixels': result['canopy_pixels'],
+                        'canopy_density': result['canopy_pixels'] / result['total_pixels']
+                    })
+                    
+        # Save CSV file
+        csv_path = os.path.join(output_dir, 'image_analysis_logs.csv')
+        with open(csv_path, 'w', newline='') as csvfile:
+            fieldnames = ['image_path', 'center', 'avg_hue', 'avg_saturation', 
+                         'avg_value', 'avg_brightness', 'total_pixels', 
+                         'sky_pixels', 'canopy_pixels', 'canopy_density']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            for row in csv_data:
+                writer.writerow(row)
+        
+        # Close progress window
+        progress_window.destroy()
+        
+        # Notify user of completion
+        messagebox.showinfo("Export Complete", 
+                          f"Exported {total_images} visualizations and CSV data to:\n{output_dir}")
+        
+    def create_and_save_visualization(self, file_path, result, output_dir):
+        """Create and save visualization images for a single processed image"""
+        # Load image
+        image = cv2.imread(file_path)
+        if image is None:
+            return
+            
+        # Get image dimensions and analysis parameters
+        h, w = image.shape[:2]
+        center = result['center_point']
+        radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
+        
+        # Create a display image with visible mask boundary
+        viz_area = image.copy()
+        cv2.circle(viz_area, center, radius, (0, 0, 255), 4)
+        cv2.circle(viz_area, center, 5, (0, 0, 255), -1)
+
+        # Get mask data directly from the result
+        sky_mask = result.get('sky_mask')
+        canopy_mask = result.get('canopy_mask')
+        
+        # If masks aren't in the result, we need to recreate them using a new analyzer
+        if sky_mask is None or canopy_mask is None:
+            # Create an analyzer and process the image
+            analyzer = CanopyAnalyzerModule(config)
+            new_result = analyzer.analyze_image(
+                file_path,
+                center, 
+                result['classification']
+            )
+            
+            # Get masks from the new analysis
+            if new_result:
+                sky_mask = new_result['sky_mask']
+                canopy_mask = new_result['canopy_mask']
+            else:
+                # Fallback to old method if analyzer fails
+                # Create HSV image for processing
+                hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+                h_chan, s_chan, v_chan = cv2.split(hsv)
+                
+                # Create circular mask
+                Y, X = np.ogrid[:h, :w]
+                dist_from_center = np.sqrt((X - center[0])**2 + (Y - center[1])**2)
+                mask_area = dist_from_center <= radius
+                
+                # Apply thresholds based on classification using config values
+                if result['classification'] == "Bright Sky":
+                    # For bright skies, focus more on value channel
+                    sky_mask = (v_chan > config.BRIGHT_THRESHOLD) & mask_area
+                elif result['classification'] == "Medium Sky":
+                    # Blue sky: typical blue HSV range
+                    blue_sky = (
+                        (h_chan >= config.BLUE_SKY_HUE_MIN) & (h_chan <= config.BLUE_SKY_HUE_MAX) &
+                        (s_chan >= config.MEDIUM_SKY_BLUE_SAT_MIN) & (s_chan <= 255) &
+                        (v_chan >= config.MEDIUM_SKY_BLUE_VALUE_MIN) & (v_chan <= 255)
+                    )
+                    
+                    # White sky: low saturation, high value
+                    white_sky = (
+                        (s_chan <= config.MEDIUM_SKY_WHITE_SAT_MAX) &
+                        (v_chan >= config.MEDIUM_SKY_WHITE_VALUE_MIN)
+                    )
+                    
+                    # Combined sky mask
+                    sky_mask = (blue_sky | white_sky) & mask_area
+                else:  # Low Sky
+                    sky_mask = (
+                        ((h_chan >= config.BLUE_SKY_HUE_MIN) & (h_chan <= config.BLUE_SKY_HUE_MAX) &
+                         (s_chan >= config.LOW_SKY_BLUE_SAT_MIN) & (s_chan <= 255) &
+                         (v_chan >= config.LOW_SKY_BLUE_VALUE_MIN) & (v_chan <= 255))
+                        |
+                        ((s_chan <= config.LOW_SKY_WHITE_SAT_MAX) & (v_chan >= config.LOW_SKY_WHITE_VALUE_MIN))
+                    ) & mask_area
+                
+                # Canopy mask is everything in mask_area that's not sky
+                canopy_mask = mask_area & ~sky_mask
+        
+        # For visualization - create a binary mask overlay
+        viz_mask = image.copy()
+        
+        # Create colored overlay - blue for sky, green for canopy
+        viz_mask[sky_mask] = [255, 0, 0]  # Blue for sky (BGR format)
+        viz_mask[canopy_mask] = [0, 255, 0]  # Green for canopy
+        
+        # Convert images from BGR to RGB for matplotlib
+        viz_area_rgb = cv2.cvtColor(viz_area, cv2.COLOR_BGR2RGB)
+        viz_mask_rgb = cv2.cvtColor(viz_mask, cv2.COLOR_BGR2RGB)
+        
+        # Calculate sky and canopy percentages
+        total_pixels = result['total_pixels']
+        sky_pixels = result['sky_pixels']
+        canopy_pixels = result['canopy_pixels']
+        
+        # Create figure with matplotlib
+        plt.figure(figsize=(15, 8))
+        
+        # Set main title for the whole figure
+        filename = os.path.basename(file_path)
+        plt.suptitle(f"Canopy Analysis: {filename}", fontsize=16)
+        
+        # Original image with analysis area
+        plt.subplot(1, 2, 1)
+        plt.imshow(viz_area_rgb)
+        plt.title("Analysis Area Overlay")
+        plt.axis('off')
+        
+        # Image with sky/canopy mask
+        plt.subplot(1, 2, 2)
+        plt.imshow(viz_mask_rgb)
+        plt.title("Sky and Canopy Overlay")
+        plt.axis('off')
+        
+        # Add text with analysis data below the plots
+        analysis_text = (
+            f"Total Pixels in Analysis Area: {total_pixels}\n"
+            f"Sky Pixels: {sky_pixels} ({sky_pixels/total_pixels*100:.1f}%)\n"
+            f"Canopy Pixels: {canopy_pixels} ({canopy_pixels/total_pixels*100:.1f}%)\n"
+            f"Canopy Coverage: {result['canopy_percentage']:.1f}%"
+        )
+        
+        plt.figtext(0.5, 0.05, analysis_text, ha="center", fontsize=12, 
+                   bbox={"facecolor":"white", "alpha":0.8, "pad":5})
+        
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.85, bottom=0.2)  # Make room for title and text
+        
+        # Save the figure
+        output_path = os.path.join(output_dir, f"processed_{os.path.basename(file_path).split('.')[0]}.png")
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+    def display_canopy_analysis(self, file_path):
+        """Display canopy analysis visualization for the current image"""
+        if file_path not in self.canopy_results:
+            messagebox.showinfo("No Analysis", "Canopy analysis not available for this image.")
+            return
+            
+        # Get canopy analysis results
+        result = self.canopy_results[file_path]
+        
+        # Load the original image
+        image = cv2.imread(file_path)
+        if image is None:
+            messagebox.showerror("Error", f"Could not load image: {file_path}")
+            return
+            
+        # Get image dimensions and analysis parameters
+        h, w = image.shape[:2]
+        center = result['center_point']
+        radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
+        
+        # Get mask data directly from the result
+        sky_mask = result.get('sky_mask')
+        canopy_mask = result.get('canopy_mask')
+        
+        # If masks aren't in the result, we need to recreate them using a new analyzer
+        if sky_mask is None or canopy_mask is None:
+            # Create an analyzer and process the image
+            analyzer = CanopyAnalyzerModule(config)
+            new_result = analyzer.analyze_image(
+                file_path,
+                center, 
+                result['classification']
+            )
+            
+            # Get masks from the new analysis
+            if new_result:
+                sky_mask = new_result['sky_mask']
+                canopy_mask = new_result['canopy_mask']
+            else:
+                # Fallback to old method if analyzer fails
+                # Create HSV image for processing
+                hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+                h_chan, s_chan, v_chan = cv2.split(hsv)
+                
+                # Create circular mask
+                Y, X = np.ogrid[:h, :w]
+                dist_from_center = np.sqrt((X - center[0])**2 + (Y - center[1])**2)
+                mask_area = dist_from_center <= radius
+                
+                # Apply thresholds based on classification using config values
+                if result['classification'] == "Bright Sky":
+                    # For bright skies, focus more on value channel
+                    sky_mask = (v_chan > config.BRIGHT_THRESHOLD) & mask_area
+                elif result['classification'] == "Medium Sky":
+                    # Blue sky: typical blue HSV range
+                    blue_sky = (
+                        (h_chan >= config.BLUE_SKY_HUE_MIN) & (h_chan <= config.BLUE_SKY_HUE_MAX) &
+                        (s_chan >= config.MEDIUM_SKY_BLUE_SAT_MIN) & (s_chan <= 255) &
+                        (v_chan >= config.MEDIUM_SKY_BLUE_VALUE_MIN) & (v_chan <= 255)
+                    )
+                    
+                    # White sky: low saturation, high value
+                    white_sky = (
+                        (s_chan <= config.MEDIUM_SKY_WHITE_SAT_MAX) &
+                        (v_chan >= config.MEDIUM_SKY_WHITE_VALUE_MIN)
+                    )
+                    
+                    # Combined sky mask
+                    sky_mask = (blue_sky | white_sky) & mask_area
+                else:  # Low Sky
+                    sky_mask = (
+                        ((h_chan >= config.BLUE_SKY_HUE_MIN) & (h_chan <= config.BLUE_SKY_HUE_MAX) &
+                         (s_chan >= config.LOW_SKY_BLUE_SAT_MIN) & (s_chan <= 255) &
+                         (v_chan >= config.LOW_SKY_BLUE_VALUE_MIN) & (v_chan <= 255))
+                        |
+                        ((s_chan <= config.LOW_SKY_WHITE_SAT_MAX) & (v_chan >= config.LOW_SKY_WHITE_VALUE_MIN))
+                    ) & mask_area
+                
+                # Canopy mask is everything in mask_area that's not sky
+                canopy_mask = mask_area & ~sky_mask
+        
+        # Create semi-transparent overlay
+        overlay = image.copy()
+        
+        # Create colored overlay - blue for sky, green for canopy
+        overlay[sky_mask] = [255, 0, 0]  # Blue for sky (BGR format)
+        overlay[canopy_mask] = [0, 255, 0]  # Green for canopy
+        
+        # Add circle boundary
+        cv2.circle(overlay, center, radius, (0, 0, 255), 4)
+        cv2.circle(overlay, center, 5, (0, 0, 255), -1)
+        
+        # Update the info display with canopy analysis data
+        self.classification_label.config(text=f"Classification: {result['classification']}")
+        self.brightness_label.config(text=f"Canopy Percentage: {result['canopy_percentage']:.1f}%")
+        self.white_pixels_label.config(text=f"Sky Pixels: {result['sky_pixels']}")
+        self.bright_pixels_label.config(text=f"Canopy Pixels: {result['canopy_pixels']}")
+        
+        # Display the overlay image
+        self.display_image(overlay)
 
 def main():
     root = tk.Tk()
