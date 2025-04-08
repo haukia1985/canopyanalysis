@@ -17,6 +17,7 @@ from CanopyApp.processing.canopy_analyzer_module import CanopyAnalyzerModule
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for saving figures
+from datetime import datetime
 
 def create_circular_mask(h, w, center, radius):
     """Create a circular mask with the given dimensions and parameters."""
@@ -211,6 +212,10 @@ class CanopyAnalyzer:
         self.canopy_results = {}  # Dict to store canopy analysis results
         self.display_mode = "canopy"  # Always use canopy view
         
+        # Flag to track if we're using custom parameters
+        self.using_custom_params = False
+        self.custom_params = {}  # Store custom parameters for each image
+        
         # Create main frame
         self.main_frame = ttk.Frame(root, padding="10")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
@@ -225,6 +230,18 @@ class CanopyAnalyzer:
         
         self.load_batch_button = ttk.Button(self.button_frame, text="Load Image Folder", command=self.load_batch)
         self.load_batch_button.pack(side=tk.LEFT, padx=5)
+        
+        # Create config toggle button
+        self.show_config_var = tk.BooleanVar(value=False)
+        self.show_config_button = ttk.Checkbutton(self.button_frame, text="Show Config Values", 
+                                                variable=self.show_config_var, command=self.toggle_config_display)
+        self.show_config_button.pack(side=tk.RIGHT, padx=5)
+        
+        # Create HSV adjustment toggle button
+        self.show_adjust_var = tk.BooleanVar(value=False)
+        self.show_adjust_button = ttk.Checkbutton(self.button_frame, text="Adjust Parameters", 
+                                                variable=self.show_adjust_var, command=self.toggle_adjustment_panel)
+        self.show_adjust_button.pack(side=tk.RIGHT, padx=5)
         
         # Create info frame for classification details
         self.info_frame = ttk.LabelFrame(self.main_frame, text="Classification Details")
@@ -248,6 +265,30 @@ class CanopyAnalyzer:
         
         self.file_count_label = ttk.Label(self.info_frame, text="Image: -- / --")
         self.file_count_label.grid(row=1, column=1, padx=10, pady=2, sticky=tk.W)
+        
+        # Create config frame - initially hidden
+        self.config_frame = ttk.LabelFrame(self.main_frame, text="Configuration Values")
+        
+        # Create a frame for config values with scrollbar
+        self.config_canvas = tk.Canvas(self.config_frame)
+        self.config_scrollbar = ttk.Scrollbar(self.config_frame, orient="vertical", command=self.config_canvas.yview)
+        self.config_canvas.configure(yscrollcommand=self.config_scrollbar.set)
+        
+        self.config_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.config_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        self.config_inner_frame = ttk.Frame(self.config_canvas)
+        self.config_canvas_window = self.config_canvas.create_window((0, 0), window=self.config_inner_frame, anchor="nw")
+        
+        self.config_inner_frame.bind("<Configure>", lambda e: self.config_canvas.configure(scrollregion=self.config_canvas.bbox("all")))
+        self.config_canvas.bind("<Configure>", self.on_config_canvas_configure)
+        
+        # Fill the config frame with values
+        self.populate_config_frame()
+        
+        # Create parameter adjustment frame - initially hidden
+        self.adjustment_frame = ttk.LabelFrame(self.main_frame, text="Parameter Adjustment")
+        self.create_adjustment_panel()
         
         # Create batch navigation frame
         self.nav_frame = ttk.Frame(self.main_frame)
@@ -355,8 +396,30 @@ class CanopyAnalyzer:
             messagebox.showinfo("Found JSON Files", f"Found {len(json_files)} JSON file(s) in the folder. Checking for previous classification data.")
             # Load classification data from JSON files
             self.classification_data = load_classification_data(json_files, image_files)
+            
+            # Also load custom parameters if available
+            self.custom_params = {}
+            for json_file in json_files:
+                try:
+                    with open(json_file, 'r') as f:
+                        data = json.load(f)
+                        
+                    # Process each entry in the JSON
+                    for file_path, result in data.items():
+                        # Find matching image file
+                        basename = os.path.basename(file_path)
+                        matching_files = [img for img in image_files if os.path.basename(img) == basename]
+                        
+                        if matching_files and "custom_parameters" in result:
+                            self.custom_params[matching_files[0]] = result["custom_parameters"]
+                except Exception as e:
+                    print(f"Error loading JSON file {json_file}: {str(e)}")
+            
             if self.classification_data:
                 messagebox.showinfo("Loaded Data", f"Loaded classification data for {len(self.classification_data)} images.")
+            
+            if self.custom_params:
+                messagebox.showinfo("Loaded Parameters", f"Loaded custom parameters for {len(self.custom_params)} images.")
         
         # Reset batch variables
         self.batch_file_list = image_files
@@ -599,69 +662,46 @@ class CanopyAnalyzer:
             self.status_label.pack_forget()
     
     def save_results(self):
-        if not self.batch_file_list:
-            messagebox.showinfo("No Results", "No batch loaded. Please load an image folder first.")
+        """Save all batch results to JSON file"""
+        if not self.batch_results:
+            messagebox.showinfo("No Results", "No results to save.")
             return
             
-        # Ask for save location
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json")],
-            title="Save Classification Results"
-        )
+        # Create output directory if it doesn't exist
+        output_dir = os.path.join(os.path.dirname(self.batch_file_list[0]), "processed_results")
+        os.makedirs(output_dir, exist_ok=True)
         
-        if not save_path:
-            return
+        # Create output file path
+        output_file = os.path.join(output_dir, f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
         
-        # Inform user that processing is starting
-        messagebox.showinfo("Processing Batch", "Processing all images in folder. This may take a moment...")
-        
-        # Process all images in the batch that haven't been processed yet
-        for file_path in self.batch_file_list:
-            if file_path not in self.batch_results:
-                # Process the image with default center
-                image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center = process_single_image(file_path)
-                
-                if image is not None:
-                    # Store results in batch dictionary
-                    self.batch_results[file_path] = {
-                        "classification": classification,
-                        "avg_brightness": avg_brightness,
-                        "white_percent": white_percent,
-                        "bright_percent": bright_percent,
-                        "mask_center": center
-                    }
-        
-        # Prepare results for saving
-        results_to_save = {}
+        # Prepare results for JSON serialization
+        serializable_results = {}
         for file_path, result in self.batch_results.items():
-            # Don't save the masked image, just the classification and metrics
-            results_to_save[file_path] = {
-                "file_name": os.path.basename(file_path),
-                "classification": result["classification"],
-                "avg_brightness": float(result["avg_brightness"]),
-                "white_percent": float(result["white_percent"]),
-                "bright_percent": float(result["bright_percent"]),
-                "mask_center": {
-                    "x": int(result["mask_center"][0]) if "mask_center" in result else None,
-                    "y": int(result["mask_center"][1]) if "mask_center" in result else None
-                }
-            }
-            
+            # Create a copy without non-serializable objects
+            result_copy = {}
+            for key, value in result.items():
+                # Skip non-serializable objects
+                if key not in ["masked_image", "display_image"]:
+                    if key == "mask_center" and isinstance(value, tuple):
+                        # Convert center point tuple to dictionary
+                        result_copy[key] = {"x": value[0], "y": value[1]}
+                    else:
+                        result_copy[key] = value
+                        
+            # Add custom parameters if available
+            if file_path in self.custom_params:
+                result_copy["custom_parameters"] = self.custom_params[file_path]
+                
+            # Store with basename as key for better portability
+            serializable_results[os.path.basename(file_path)] = result_copy
+        
         # Save to JSON file
         try:
-            with open(save_path, 'w') as f:
-                json.dump(results_to_save, f, indent=4)
-            messagebox.showinfo("Save Successful", f"All {len(results_to_save)} images processed and results saved to {save_path}")
-            # Enable export visualizations button
-            self.export_visualizations_button.config(state=tk.NORMAL)
-            
-            # Display canopy analysis for current image
-            if self.current_file_path:
-                self.display_canopy_analysis(self.current_file_path)
-            
+            with open(output_file, 'w') as f:
+                json.dump(serializable_results, f, indent=2)
+            messagebox.showinfo("Results Saved", f"Results saved to {output_file}")
         except Exception as e:
-            messagebox.showerror("Save Error", f"Error saving results: {str(e)}")
+            messagebox.showerror("Error", f"Failed to save results: {str(e)}")
     
     def on_frame_resize(self, event):
         """Handle resize event on the image frame"""
@@ -1193,81 +1233,464 @@ class CanopyAnalyzer:
         # Display the overlay image
         self.display_image(overlay)
 
-    def on_classification_changed(self, event=None):
-        """Handle classification dropdown change event"""
-        if not self.current_file_path or not self.batch_results:
-            return
+    def on_config_canvas_configure(self, event):
+        """Update the scrollregion when the canvas size changes"""
+        self.config_canvas.itemconfig(self.config_canvas_window, width=event.width)
+    
+    def toggle_config_display(self):
+        """Toggle the visibility of the config values frame"""
+        if self.show_config_var.get():
+            # Show config frame
+            self.config_frame.pack(fill=tk.X, pady=5, before=self.nav_frame)
+        else:
+            # Hide config frame
+            self.config_frame.pack_forget()
+    
+    def populate_config_frame(self):
+        """Fill the config frame with values from the config module"""
+        # Clear any existing content
+        for widget in self.config_inner_frame.winfo_children():
+            widget.destroy()
         
-        # Get the selected classification
-        new_classification = self.classification_var.get()
+        # Create header
+        ttk.Label(self.config_inner_frame, text="Parameter", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Value", font=("Arial", 10, "bold")).grid(row=0, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Description", font=("Arial", 10, "bold")).grid(row=0, column=2, padx=5, pady=2, sticky=tk.W)
         
-        # Update the classification in the results dictionary
-        if self.current_file_path in self.batch_results:
-            self.batch_results[self.current_file_path]["classification"] = new_classification
+        # Add separator
+        separator = ttk.Separator(self.config_inner_frame, orient='horizontal')
+        separator.grid(row=1, column=0, columnspan=3, sticky='ew', pady=5)
+        
+        # Category headers and config values
+        row = 2
+        
+        # Brightness Filtering
+        ttk.Label(self.config_inner_frame, text="Brightness Filtering", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="MIN_BRIGHTNESS_FILTER").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.MIN_BRIGHTNESS_FILTER)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Minimum brightness value for filtering").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        
+        # Pixel Brightness Thresholds
+        ttk.Label(self.config_inner_frame, text="Pixel Brightness Thresholds", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="VERY_BRIGHT_THRESHOLD").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.VERY_BRIGHT_THRESHOLD)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Threshold for very bright pixels").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="BRIGHT_THRESHOLD").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.BRIGHT_THRESHOLD)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Threshold for bright pixels").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="MEDIUM_THRESHOLD").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.MEDIUM_THRESHOLD)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Threshold for medium pixels").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        
+        # Add separator
+        separator = ttk.Separator(self.config_inner_frame, orient='horizontal')
+        separator.grid(row=row, column=0, columnspan=3, sticky='ew', pady=5)
+        row += 1
+        
+        # Image Classification Thresholds - Bright Sky
+        ttk.Label(self.config_inner_frame, text="Bright Sky Classification", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="OVEREXPOSED_AVG_BRIGHTNESS").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.OVEREXPOSED_AVG_BRIGHTNESS)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Average brightness threshold for overexposure").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="BRIGHT_SKY_VERY_BRIGHT_PERCENT").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.BRIGHT_SKY_VERY_BRIGHT_PERCENT)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Percentage threshold for very bright pixels").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="BRIGHT_SKY_AVG_BRIGHTNESS").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.BRIGHT_SKY_AVG_BRIGHTNESS)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Average brightness threshold for bright sky").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="BRIGHT_SKY_COMBINED_BRIGHT_PERCENT").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.BRIGHT_SKY_COMBINED_BRIGHT_PERCENT)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Combined percentage threshold for bright pixels").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        
+        # Add separator
+        separator = ttk.Separator(self.config_inner_frame, orient='horizontal')
+        separator.grid(row=row, column=0, columnspan=3, sticky='ew', pady=5)
+        row += 1
+        
+        # Medium Sky Classification
+        ttk.Label(self.config_inner_frame, text="Medium Sky Classification", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="MEDIUM_SKY_MEDIUM_PERCENT").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.MEDIUM_SKY_MEDIUM_PERCENT)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Percentage threshold for medium pixels").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="MEDIUM_SKY_MIN_AVG_BRIGHTNESS").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.MEDIUM_SKY_MIN_AVG_BRIGHTNESS)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Minimum average brightness threshold").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="MEDIUM_SKY_MAX_AVG_BRIGHTNESS").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.MEDIUM_SKY_MAX_AVG_BRIGHTNESS)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Maximum average brightness threshold").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        
+        # Add separator
+        separator = ttk.Separator(self.config_inner_frame, orient='horizontal')
+        separator.grid(row=row, column=0, columnspan=3, sticky='ew', pady=5)
+        row += 1
+        
+        # Mask Size
+        ttk.Label(self.config_inner_frame, text="Mask Settings", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="MASK_RADIUS_PERCENT").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.MASK_RADIUS_PERCENT)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Mask radius as percentage of smaller image dimension").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        
+        # Add separator
+        separator = ttk.Separator(self.config_inner_frame, orient='horizontal')
+        separator.grid(row=row, column=0, columnspan=3, sticky='ew', pady=5)
+        row += 1
+        
+        # HSV Thresholds for Sky Detection
+        ttk.Label(self.config_inner_frame, text="HSV Thresholds for Sky Detection", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="BLUE_SKY_HUE_MIN").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.BLUE_SKY_HUE_MIN)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Minimum hue for blue sky detection").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        ttk.Label(self.config_inner_frame, text="BLUE_SKY_HUE_MAX").grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text=str(config.BLUE_SKY_HUE_MAX)).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Label(self.config_inner_frame, text="Maximum hue for blue sky detection").grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+        row += 1
+        
+        # Add all the remaining HSV thresholds
+        for param_name in [
+            "MEDIUM_SKY_BLUE_SAT_MIN", "MEDIUM_SKY_BLUE_VALUE_MIN", 
+            "MEDIUM_SKY_WHITE_SAT_MAX", "MEDIUM_SKY_WHITE_VALUE_MIN",
+            "LOW_SKY_BLUE_SAT_MIN", "LOW_SKY_BLUE_VALUE_MIN",
+            "LOW_SKY_WHITE_SAT_MAX", "LOW_SKY_WHITE_VALUE_MIN"
+        ]:
+            ttk.Label(self.config_inner_frame, text=param_name).grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+            ttk.Label(self.config_inner_frame, text=str(getattr(config, param_name))).grid(row=row, column=1, padx=5, pady=2, sticky=tk.W)
             
-            # Update the display
-            self.classification_label.config(text=f"Classification: {new_classification}")
-            self.classification_label.config(foreground="black")
+            # Add descriptions based on parameter name
+            description = "Parameter for sky detection algorithm"
+            if "SAT" in param_name:
+                description = "Saturation threshold for sky detection"
+            elif "VALUE" in param_name:
+                description = "Value/brightness threshold for sky detection"
             
-            # If we're currently viewing canopy analysis, re-analyze with the new classification
-            if hasattr(self, 'canopy_results') and self.current_file_path in self.canopy_results:
-                # Re-analyze the current image with new classification
-                self.reanalyze_canopy_with_new_classification()
+            ttk.Label(self.config_inner_frame, text=description).grid(row=row, column=2, padx=5, pady=2, sticky=tk.W)
+            row += 1
 
-    def reanalyze_canopy_with_new_classification(self):
-        """Re-analyze the current image with the new classification and update display"""
-        if not self.current_file_path or not hasattr(self, 'canopy_results'):
+    def create_adjustment_panel(self):
+        """Create the parameter adjustment panel with sliders and numeric inputs"""
+        # Create variables to store parameter values
+        self.param_vars = {
+            # Blue Sky HSV
+            "blue_hue_min": tk.IntVar(value=config.BLUE_SKY_HUE_MIN),
+            "blue_hue_max": tk.IntVar(value=config.BLUE_SKY_HUE_MAX),
+            "blue_sat_min": tk.IntVar(value=config.MEDIUM_SKY_BLUE_SAT_MIN),
+            "blue_value_min": tk.IntVar(value=config.MEDIUM_SKY_BLUE_VALUE_MIN),
+            
+            # White Sky 
+            "white_sat_max": tk.IntVar(value=config.MEDIUM_SKY_WHITE_SAT_MAX),
+            "white_value_min": tk.IntVar(value=config.MEDIUM_SKY_WHITE_VALUE_MIN),
+            
+            # Brightness thresholds
+            "very_bright_threshold": tk.IntVar(value=config.VERY_BRIGHT_THRESHOLD),
+            "bright_threshold": tk.IntVar(value=config.BRIGHT_THRESHOLD),
+        }
+        
+        # Create frame for sliders
+        slider_frame = ttk.Frame(self.adjustment_frame)
+        slider_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Function to add a slider with numeric input
+        def add_slider(frame, row, param_name, label_text, min_val, max_val):
+            ttk.Label(frame, text=label_text).grid(row=row, column=0, padx=5, pady=2, sticky=tk.W)
+            
+            # Create slider
+            slider = ttk.Scale(frame, from_=min_val, to=max_val, 
+                              variable=self.param_vars[param_name],
+                              command=lambda _: self.on_parameter_changed())
+            slider.grid(row=row, column=1, padx=5, pady=2, sticky=tk.EW)
+            
+            # Create numeric entry
+            entry = ttk.Entry(frame, width=5, textvariable=self.param_vars[param_name])
+            entry.grid(row=row, column=2, padx=5, pady=2)
+            entry.bind("<Return>", lambda e: self.on_parameter_changed())
+            entry.bind("<FocusOut>", lambda e: self.on_parameter_changed())
+        
+        # Blue Sky HSV section
+        ttk.Label(slider_frame, text="Blue Sky HSV", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        
+        add_slider(slider_frame, 1, "blue_hue_min", "Hue Min:", 0, 180)
+        add_slider(slider_frame, 2, "blue_hue_max", "Hue Max:", 0, 180)
+        add_slider(slider_frame, 3, "blue_sat_min", "Saturation Min:", 0, 255)
+        add_slider(slider_frame, 4, "blue_value_min", "Value Min:", 0, 255)
+        
+        # White Sky section
+        ttk.Label(slider_frame, text="White/Grey Sky", font=("Arial", 10, "bold")).grid(
+            row=5, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        
+        add_slider(slider_frame, 6, "white_sat_max", "Saturation Max:", 0, 255)
+        add_slider(slider_frame, 7, "white_value_min", "Value Min:", 0, 255)
+        
+        # Brightness thresholds
+        ttk.Label(slider_frame, text="Brightness Thresholds", font=("Arial", 10, "bold")).grid(
+            row=8, column=0, columnspan=3, padx=5, pady=2, sticky=tk.W)
+        
+        add_slider(slider_frame, 9, "very_bright_threshold", "Very Bright Threshold:", 0, 255)
+        add_slider(slider_frame, 10, "bright_threshold", "Bright Threshold:", 0, 255)
+        
+        # Add buttons
+        button_frame = ttk.Frame(self.adjustment_frame)
+        button_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(button_frame, text="Reset Parameters", 
+                  command=self.reset_parameters).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(button_frame, text="Apply to Current Image", 
+                  command=self.apply_custom_parameters).pack(side=tk.LEFT, padx=5)
+        
+        self.custom_params_label = ttk.Label(button_frame, text="Using Default Parameters", 
+                                           font=("Arial", 9), foreground="gray")
+        self.custom_params_label.pack(side=tk.RIGHT, padx=5)
+        
+        # Configure grid column weights
+        slider_frame.columnconfigure(1, weight=1)
+    
+    def toggle_adjustment_panel(self):
+        """Toggle the visibility of the parameter adjustment panel"""
+        if self.show_adjust_var.get():
+            # Show parameter adjustment panel
+            self.adjustment_frame.pack(fill=tk.X, pady=5, before=self.nav_frame)
+            
+            # Initialize parameter values based on current image
+            if self.current_file_path and self.current_file_path in self.custom_params:
+                # Load custom parameters for this image
+                params = self.custom_params[self.current_file_path]
+                for param_name, value in params.items():
+                    if param_name in self.param_vars:
+                        self.param_vars[param_name].set(value)
+                self.custom_params_label.config(text="Using Custom Parameters", foreground="blue")
+                self.using_custom_params = True
+            else:
+                # Use default parameters
+                self.reset_parameters()
+        else:
+            # Hide parameter adjustment panel
+            self.adjustment_frame.pack_forget()
+    
+    def on_parameter_changed(self):
+        """Handle parameter slider or entry change with debouncing"""
+        # Cancel previous update if it exists
+        if hasattr(self, '_update_timer') and self._update_timer:
+            self.root.after_cancel(self._update_timer)
+        
+        # Schedule new update after a short delay (debounce)
+        self._update_timer = self.root.after(200, self.update_image_with_current_parameters)
+    
+    def update_image_with_current_parameters(self):
+        """Update the image preview using current parameter values"""
+        if not self.current_file_path or not hasattr(self, 'original_image'):
             return
         
-        # Get the new classification and center point
+        # Mark that we're using custom parameters
+        self.using_custom_params = True
+        self.custom_params_label.config(text="Using Custom Parameters (Unsaved)", foreground="blue")
+        
+        # Re-analyze the current image with custom parameters
+        self.reanalyze_with_custom_parameters()
+    
+    def reset_parameters(self):
+        """Reset parameters to default values from config"""
+        # Reset all parameter variables to config defaults
+        self.param_vars["blue_hue_min"].set(config.BLUE_SKY_HUE_MIN)
+        self.param_vars["blue_hue_max"].set(config.BLUE_SKY_HUE_MAX)
+        self.param_vars["blue_sat_min"].set(config.MEDIUM_SKY_BLUE_SAT_MIN)
+        self.param_vars["blue_value_min"].set(config.MEDIUM_SKY_BLUE_VALUE_MIN)
+        self.param_vars["white_sat_max"].set(config.MEDIUM_SKY_WHITE_SAT_MAX)
+        self.param_vars["white_value_min"].set(config.MEDIUM_SKY_WHITE_VALUE_MIN)
+        self.param_vars["very_bright_threshold"].set(config.VERY_BRIGHT_THRESHOLD)
+        self.param_vars["bright_threshold"].set(config.BRIGHT_THRESHOLD)
+        
+        # Clear custom parameters for current image
+        if self.current_file_path and self.current_file_path in self.custom_params:
+            del self.custom_params[self.current_file_path]
+        
+        # Update UI
+        self.using_custom_params = False
+        self.custom_params_label.config(text="Using Default Parameters", foreground="gray")
+        
+        # Reanalyze with default parameters
+        if self.current_file_path:
+            # Reset to original classification
+            if self.current_file_path in self.batch_results:
+                classification = self.batch_results[self.current_file_path]["classification"]
+                self.classification_var.set(classification)
+                
+                # Reprocess with default parameters
+                self.reanalyze_canopy_with_new_classification()
+    
+    def apply_custom_parameters(self):
+        """Save the current parameter values for this image"""
+        if not self.current_file_path:
+            return
+        
+        # Save current parameters
+        self.custom_params[self.current_file_path] = {
+            "blue_hue_min": self.param_vars["blue_hue_min"].get(),
+            "blue_hue_max": self.param_vars["blue_hue_max"].get(),
+            "blue_sat_min": self.param_vars["blue_sat_min"].get(),
+            "blue_value_min": self.param_vars["blue_value_min"].get(),
+            "white_sat_max": self.param_vars["white_sat_max"].get(),
+            "white_value_min": self.param_vars["white_value_min"].get(),
+            "very_bright_threshold": self.param_vars["very_bright_threshold"].get(),
+            "bright_threshold": self.param_vars["bright_threshold"].get(),
+        }
+        
+        # Update UI
+        self.custom_params_label.config(text="Using Custom Parameters", foreground="blue")
+        
+        # Update status message
+        self.update_status_message("Custom parameters saved for this image")
+        
+        # Add custom parameters to the batch results for saving to JSON
+        if self.current_file_path in self.batch_results:
+            self.batch_results[self.current_file_path]["custom_parameters"] = self.custom_params[self.current_file_path]
+    
+    def reanalyze_with_custom_parameters(self):
+        """Re-analyze the current image with custom parameters"""
+        if not self.current_file_path or not hasattr(self, 'original_image'):
+            return
+        
+        # Get current classification and center point
         classification = self.classification_var.get()
         
-        # Get the center point from the batch results (keep the same center)
         if self.current_file_path in self.batch_results:
             center_point = self.batch_results[self.current_file_path]["mask_center"]
             
-            # Create a new analyzer and process the image
+            # Get current parameter values
+            params = {
+                "blue_hue_min": self.param_vars["blue_hue_min"].get(),
+                "blue_hue_max": self.param_vars["blue_hue_max"].get(),
+                "blue_sat_min": self.param_vars["blue_sat_min"].get(),
+                "blue_value_min": self.param_vars["blue_value_min"].get(),
+                "white_sat_max": self.param_vars["white_sat_max"].get(),
+                "white_value_min": self.param_vars["white_value_min"].get(),
+                "very_bright_threshold": self.param_vars["very_bright_threshold"].get(),
+                "bright_threshold": self.param_vars["bright_threshold"].get(),
+            }
+            
+            # Create a new analyzer with custom parameters
             analyzer = CanopyAnalyzerModule(config)
-            new_result = analyzer.analyze_image(
-                self.current_file_path,
-                center_point, 
-                classification
-            )
             
-            if new_result:
-                # Update the canopy results for this image
-                self.canopy_results[self.current_file_path] = new_result
-                
-                # Update the display
-                self.display_canopy_analysis(self.current_file_path)
-                
-                # Add a status message instead of a popup
-                self.status_message = f"Analysis updated with {classification} classification"
-                
-                # Show a temporary status message under the image
-                self.update_status_message(self.status_message)
-
-    def update_status_message(self, message, duration=3000):
-        """Display a temporary status message"""
-        if not hasattr(self, 'status_label'):
-            # Create a status label if it doesn't exist
-            self.status_label = ttk.Label(self.image_frame, text=message, 
-                                         font=("Arial", 10), foreground="blue")
-            self.status_label.pack(side=tk.BOTTOM, pady=5, before=self.instructions_label)
-        else:
-            # Update existing label
-            self.status_label.config(text=message)
+            # Process the image
+            image = cv2.imread(self.current_file_path)
+            if image is None:
+                messagebox.showerror("Error", f"Could not load image: {self.current_file_path}")
+                return
             
-        # Make sure it's visible
-        self.status_label.pack(side=tk.BOTTOM, pady=5, before=self.instructions_label)
-        
-        # Clear the message after the specified duration
-        self.root.after(duration, self.clear_status_message)
-        
-    def clear_status_message(self):
-        """Clear the status message"""
-        if hasattr(self, 'status_label'):
-            self.status_label.pack_forget()
+            # Get image dimensions
+            h, w = image.shape[:2]
+            radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
+            
+            # Create HSV image for processing
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            h_chan, s_chan, v_chan = cv2.split(hsv)
+            
+            # Create circular mask
+            Y, X = np.ogrid[:h, :w]
+            dist_from_center = np.sqrt((X - center_point[0])**2 + (Y - center_point[1])**2)
+            mask_area = dist_from_center <= radius
+            
+            # For all classifications, first identify very bright areas (sun)
+            # Very bright pixels (like sun) with low saturation are always sky
+            sun_areas = (v_chan > params["very_bright_threshold"]) & (s_chan < 10) & mask_area
+            
+            # Apply thresholds based on classification using custom parameters
+            if classification == "Bright Sky":
+                # For bright skies, focus more on value channel
+                bright_sky = (v_chan > params["bright_threshold"]) & mask_area
+                sky_mask = sun_areas | bright_sky
+            elif classification == "Medium Sky":
+                # Blue sky: custom HSV range
+                blue_sky = (
+                    (h_chan >= params["blue_hue_min"]) & (h_chan <= params["blue_hue_max"]) &
+                    (s_chan >= params["blue_sat_min"]) & (s_chan <= 255) &
+                    (v_chan >= params["blue_value_min"]) & (v_chan <= 255)
+                )
+                
+                # White sky: custom thresholds
+                white_sky = (
+                    (s_chan <= params["white_sat_max"]) &
+                    (v_chan >= params["white_value_min"])
+                )
+                
+                # Combined sky mask - sun areas are always sky, plus blue sky and white sky
+                sky_mask = sun_areas | ((blue_sky | white_sky) & mask_area)
+            else:  # Low Sky
+                # Use the same approach but with low sky thresholds
+                blue_sky = (
+                    (h_chan >= params["blue_hue_min"]) & (h_chan <= params["blue_hue_max"]) &
+                    (s_chan >= params["blue_sat_min"]) & (s_chan <= 255) &
+                    (v_chan >= params["blue_value_min"]) & (v_chan <= 255)
+                )
+                
+                white_sky = (
+                    (s_chan <= params["white_sat_max"]) &
+                    (v_chan >= params["white_value_min"])
+                )
+                
+                # Combined sky mask - sun areas are always sky
+                sky_mask = sun_areas | ((blue_sky | white_sky) & mask_area)
+            
+            # Canopy mask is everything in mask_area that's not sky
+            canopy_mask = mask_area & ~sky_mask
+            
+            # Count pixels for statistics
+            total_pixels = np.sum(mask_area)
+            sky_pixels = np.sum(sky_mask)
+            canopy_pixels = np.sum(canopy_mask)
+            canopy_percentage = (canopy_pixels / total_pixels) * 100 if total_pixels > 0 else 0
+            
+            # Create overlay for preview
+            overlay = image.copy()
+            overlay[sky_mask] = [255, 0, 0]  # Blue for sky (BGR format)
+            overlay[canopy_mask] = [0, 255, 0]  # Green for canopy
+            
+            # Add circle boundary
+            cv2.circle(overlay, center_point, radius, (0, 0, 255), 4)
+            cv2.circle(overlay, center_point, 5, (0, 0, 255), -1)
+            
+            # Create result dictionary
+            result = {
+                "classification": classification,
+                "center_point": center_point,
+                "canopy_percentage": canopy_percentage,
+                "total_pixels": total_pixels,
+                "sky_pixels": sky_pixels,
+                "canopy_pixels": canopy_pixels,
+                "sky_mask": sky_mask,
+                "canopy_mask": canopy_mask,
+                "custom_parameters": params
+            }
+            
+            # Update the canopy results for this image
+            self.canopy_results[self.current_file_path] = result
+            
+            # Update the info display with canopy analysis data
+            self.classification_label.config(text=f"Classification: {result['classification']}")
+            self.brightness_label.config(text=f"Canopy Percentage: {result['canopy_percentage']:.1f}%")
+            self.white_pixels_label.config(text=f"Sky Pixels: {result['sky_pixels']}")
+            self.bright_pixels_label.config(text=f"Canopy Pixels: {result['canopy_pixels']}")
+            
+            # Display the overlay image
+            self.display_image(overlay)
 
 def main():
     root = tk.Tk()
