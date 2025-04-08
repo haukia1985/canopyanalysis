@@ -46,6 +46,25 @@ A Python application for analyzing canopy cover in forest images. This tool help
 
 ## Installation
 
+### Option 1: Simple Installation (Recommended)
+
+1. Download or clone this repository
+2. Make sure Python 3.7+ is installed on your system
+3. Run the installer script:
+   ```
+   python install.py
+   ```
+4. The installer will:
+   - Install all required dependencies
+   - Set up the application
+   - Create a desktop shortcut or application (if possible)
+
+After installation, you can run the application by:
+- Double-clicking the desktop shortcut
+- Running `canopy-analyzer` in your terminal/command prompt
+
+### Option 2: Manual Installation
+
 1. Clone this repository
 2. Create a virtual environment:
    ```
@@ -55,6 +74,10 @@ A Python application for analyzing canopy cover in forest images. This tool help
 3. Install the dependencies:
    ```
    pip install -r requirements.txt
+   ```
+4. Run the application:
+   ```
+   python main.py
    ```
 
 ## Usage
