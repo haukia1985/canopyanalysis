@@ -1,142 +1,91 @@
 # Canopy Cover Analysis Application
 
-A Python application for analyzing canopy coverage from photographs. This tool helps researchers, students, and forestry professionals calculate the percentage of canopy cover in images by automatically detecting sky and canopy areas.
+A Python application for analyzing canopy cover in forest images. This tool helps classify sky conditions and calculate the percentage of canopy coverage in photographs taken in forest environments.
 
 ## Features
 
-- User-friendly GUI interface for image processing
-- Automatic exposure-based classification (bright/medium/dark)
-- Circular mask positioning for selective analysis
-- Sky vs. canopy percentage calculation
+- Load and process individual images or entire directories of images
+- Automatic classification of sky conditions (Bright, Medium, Low)
+- Circular mask application for consistent analysis
+- Canopy percentage calculation
 - Batch processing capabilities
-- Interactive parameter adjustments
-- Results export in CSV format
-- Visualization output for results analysis
-- Cross-platform compatibility (Windows, macOS, Linux)
-
-## Installation
-
-### Prerequisites
-
-- Python 3.8 or higher
-- pip (Python package installer)
-
-### Step 1: Clone or Download the Repository
-
-```bash
-git clone https://github.com/haukia1985/canopyanalysis.git
-cd canopyanalysis
-```
-
-Or download and extract the ZIP file from the repository.
-
-### Step 2: Create and Activate a Virtual Environment (Recommended)
-
-#### On Windows:
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-#### On macOS/Linux:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### Step 3: Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-## Running the Application
-
-The application can be started using the main.py script:
-
-```bash
-# On Windows
-python main.py
-
-# On macOS/Linux
-python3 main.py
-```
-
-## Usage Guide
-
-### Single Image Analysis
-
-1. Click "Load Image" to select a single image for analysis
-2. The application will automatically:
-   - Apply a circular mask to the center of the image
-   - Classify the image based on brightness (Bright Sky, Medium Sky, or Low Sky)
-   - Apply appropriate thresholds for sky detection
-   - Calculate canopy cover percentage
-
-3. You can:
-   - Click on the image to reposition the mask
-   - Select a different classification from the dropdown menu
-   - Adjust thresholds using the parameters panel
-   - View the analysis results
-
-### Batch Processing
-
-1. Click "Load Batch" to select multiple images for analysis
-2. The application will process each image with default settings
-3. Use the navigation buttons to move through the processed images
-4. Make adjustments to individual images as needed
-5. Click "Save Results" to export all analysis data
-
-### Adjusting Parameters
-
-1. Click "Adjustments" to open the parameter panel
-2. Modify threshold values using the sliders
-3. Click "Apply" to process the current image with new parameters
-4. Click "Reset" to restore default values
-
-### Exporting Results
-
-1. Click "Save Results" after processing images
-2. Choose a location to save the CSV file
-3. The file will contain detailed analysis for each processed image
-4. Visualization images will be saved to the "output" directory
-
-## Configuration
-
-The application uses various thresholds defined in `config.py` to classify images and detect sky areas. These include:
-
-- Brightness classification thresholds
-- Sky detection HSV thresholds
-- Mask size settings
+- Interactive GUI with image preview and result visualization
 
 ## Project Structure
 
 ```
-├── main.py              # Main application file
-├── config.py            # Configuration settings
-├── requirements.txt     # Python dependencies
-├── logs/                # Application logs
-├── output/              # Results and visualizations
-└── processed_images/    # Temporary storage for processed images
+.
+├── CanopyApp/              # Main application package
+│   ├── config/             # Configuration files and settings
+│   │   └── config.py       # Global configuration settings
+│   ├── gui/                # GUI components and views
+│   │   ├── components/     # Reusable UI components
+│   │   ├── phase1/         # Image selection interface
+│   │   ├── phase2/         # Analysis adjustment interface
+│   │   ├── viewmodels/     # View models for UI logic
+│   │   └── views/          # Main view implementations
+│   ├── processing/         # Core image processing modules
+│   │   ├── batch_processor.py       # Handles batch image processing
+│   │   ├── canopy_analysis.py       # Core canopy analysis algorithms
+│   │   ├── canopy_analyzer_module.py # Main analysis module
+│   │   ├── config_manager.py        # Configuration management
+│   │   ├── data_manager.py          # Data storage and retrieval
+│   │   ├── image_processor.py       # Image processing utilities
+│   │   ├── sky_detection.py         # Sky detection algorithms
+│   │   └── utils.py                 # Utility functions
+│   ├── app.py              # Application entry point
+│   └── workflow.py         # Analysis workflow definitions
+├── logs/                   # Log files directory
+├── output/                 # Output images and results
+├── processed_images/       # Directory for processed images
+├── config.py               # Global configuration settings
+├── main.py                 # Main executable script
+├── requirements.txt        # Python dependencies
+└── run.py                  # Alternative entry point script
 ```
 
-## Troubleshooting
+## Installation
 
-### Common Issues
+1. Clone this repository
+2. Create a virtual environment:
+   ```
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+3. Install the dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
-1. **Missing dependencies**: Ensure you've installed all requirements with `pip install -r requirements.txt`
-2. **Image loading errors**: Verify that image files are in supported formats (JPG, PNG, TIFF)
-3. **Permission errors**: Make sure you have write permissions for the output directories
+## Usage
 
-### Log Files
+Run the application using:
 
-The application creates logs in the `logs` directory that can help troubleshoot issues.
+```
+python main.py
+```
 
-## License
+This will open the GUI interface where you can:
+- Load individual images or folders of images
+- View and adjust the circular mask for analysis
+- Process images to detect canopy coverage
+- Review results in various visualization modes
+- Batch process multiple images
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+## Dependencies
 
-## Acknowledgments
+- OpenCV
+- NumPy
+- PIL/Pillow
+- Tkinter
+- Matplotlib
+- scikit-image
+- pandas
 
-- Cal Poly for providing the initial requirements and use cases
-- OpenCV, NumPy, PIL and other open-source libraries used in this project 
+## Extending the Application
+
+The modular architecture makes it easy to extend or modify:
+
+- Add new analysis algorithms in the `processing` directory
+- Create new visualization methods in the `gui` package
+- Customize configuration in the `config` directory 

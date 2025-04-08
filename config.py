@@ -49,7 +49,7 @@ MEDIUM_SKY_WHITE_VALUE_MIN = 190 # Minimum value/brightness for white sky detect
 
 # Low Sky thresholds
 LOW_SKY_BLUE_SAT_MIN = 30        # Minimum saturation for blue sky in low sky conditions
-LOW_SKY_BLUE_VALUE_MIN = 80      # Minimum value/brightness for blue sky in low sky conditions  
+LOW_SKY_BLUE_VALUE_MIN = 55      # Minimum value/brightness for blue sky in low sky conditions  
 
-LOW_SKY_WHITE_SAT_MAX = 50       # Maximum saturation for white/grey sky detection
+LOW_SKY_WHITE_SAT_MAX = 45       # Maximum saturation for white/grey sky detection
 LOW_SKY_WHITE_VALUE_MIN = 190    # Minimum value/brightness for white/grey sky detection 
