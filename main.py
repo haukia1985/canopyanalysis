@@ -536,9 +536,67 @@ class CanopyAnalyzer:
             
             # Update the display
             self.classification_label.config(text=f"Classification: {new_classification}")
-            
-            # No special coloring now
             self.classification_label.config(foreground="black")
+            
+            # If we're currently viewing canopy analysis, re-analyze with the new classification
+            if hasattr(self, 'canopy_results') and self.current_file_path in self.canopy_results:
+                # Re-analyze the current image with new classification
+                self.reanalyze_canopy_with_new_classification()
+    
+    def reanalyze_canopy_with_new_classification(self):
+        """Re-analyze the current image with the new classification and update display"""
+        if not self.current_file_path or not hasattr(self, 'canopy_results'):
+            return
+            
+        # Get the new classification and center point
+        classification = self.classification_var.get()
+        
+        # Get the center point from the batch results (keep the same center)
+        if self.current_file_path in self.batch_results:
+            center_point = self.batch_results[self.current_file_path]["mask_center"]
+            
+            # Create a new analyzer and process the image
+            analyzer = CanopyAnalyzerModule(config)
+            new_result = analyzer.analyze_image(
+                self.current_file_path,
+                center_point, 
+                classification
+            )
+            
+            if new_result:
+                # Update the canopy results for this image
+                self.canopy_results[self.current_file_path] = new_result
+                
+                # Update the display
+                self.display_canopy_analysis(self.current_file_path)
+                
+                # Add a status message instead of a popup
+                self.status_message = f"Analysis updated with {classification} classification"
+                
+                # Show a temporary status message under the image
+                self.update_status_message(self.status_message)
+    
+    def update_status_message(self, message, duration=3000):
+        """Display a temporary status message"""
+        if not hasattr(self, 'status_label'):
+            # Create a status label if it doesn't exist
+            self.status_label = ttk.Label(self.image_frame, text=message, 
+                                         font=("Arial", 10), foreground="blue")
+            self.status_label.pack(side=tk.BOTTOM, pady=5, before=self.instructions_label)
+        else:
+            # Update existing label
+            self.status_label.config(text=message)
+        
+        # Make sure it's visible
+        self.status_label.pack(side=tk.BOTTOM, pady=5, before=self.instructions_label)
+        
+        # Clear the message after the specified duration
+        self.root.after(duration, self.clear_status_message)
+        
+    def clear_status_message(self):
+        """Clear the status message"""
+        if hasattr(self, 'status_label'):
+            self.status_label.pack_forget()
     
     def save_results(self):
         if not self.batch_file_list:
@@ -1129,8 +1187,87 @@ class CanopyAnalyzer:
         self.white_pixels_label.config(text=f"Sky Pixels: {result['sky_pixels']}")
         self.bright_pixels_label.config(text=f"Canopy Pixels: {result['canopy_pixels']}")
         
+        # Set the classification dropdown to match the current classification
+        self.classification_var.set(result['classification'])
+        
         # Display the overlay image
         self.display_image(overlay)
+
+    def on_classification_changed(self, event=None):
+        """Handle classification dropdown change event"""
+        if not self.current_file_path or not self.batch_results:
+            return
+        
+        # Get the selected classification
+        new_classification = self.classification_var.get()
+        
+        # Update the classification in the results dictionary
+        if self.current_file_path in self.batch_results:
+            self.batch_results[self.current_file_path]["classification"] = new_classification
+            
+            # Update the display
+            self.classification_label.config(text=f"Classification: {new_classification}")
+            self.classification_label.config(foreground="black")
+            
+            # If we're currently viewing canopy analysis, re-analyze with the new classification
+            if hasattr(self, 'canopy_results') and self.current_file_path in self.canopy_results:
+                # Re-analyze the current image with new classification
+                self.reanalyze_canopy_with_new_classification()
+
+    def reanalyze_canopy_with_new_classification(self):
+        """Re-analyze the current image with the new classification and update display"""
+        if not self.current_file_path or not hasattr(self, 'canopy_results'):
+            return
+        
+        # Get the new classification and center point
+        classification = self.classification_var.get()
+        
+        # Get the center point from the batch results (keep the same center)
+        if self.current_file_path in self.batch_results:
+            center_point = self.batch_results[self.current_file_path]["mask_center"]
+            
+            # Create a new analyzer and process the image
+            analyzer = CanopyAnalyzerModule(config)
+            new_result = analyzer.analyze_image(
+                self.current_file_path,
+                center_point, 
+                classification
+            )
+            
+            if new_result:
+                # Update the canopy results for this image
+                self.canopy_results[self.current_file_path] = new_result
+                
+                # Update the display
+                self.display_canopy_analysis(self.current_file_path)
+                
+                # Add a status message instead of a popup
+                self.status_message = f"Analysis updated with {classification} classification"
+                
+                # Show a temporary status message under the image
+                self.update_status_message(self.status_message)
+
+    def update_status_message(self, message, duration=3000):
+        """Display a temporary status message"""
+        if not hasattr(self, 'status_label'):
+            # Create a status label if it doesn't exist
+            self.status_label = ttk.Label(self.image_frame, text=message, 
+                                         font=("Arial", 10), foreground="blue")
+            self.status_label.pack(side=tk.BOTTOM, pady=5, before=self.instructions_label)
+        else:
+            # Update existing label
+            self.status_label.config(text=message)
+            
+        # Make sure it's visible
+        self.status_label.pack(side=tk.BOTTOM, pady=5, before=self.instructions_label)
+        
+        # Clear the message after the specified duration
+        self.root.after(duration, self.clear_status_message)
+        
+    def clear_status_message(self):
+        """Clear the status message"""
+        if hasattr(self, 'status_label'):
+            self.status_label.pack_forget()
 
 def main():
     root = tk.Tk()
