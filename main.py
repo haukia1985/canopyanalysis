@@ -35,6 +35,19 @@ def find_json_files(directory):
     Returns:
         List of JSON file paths
     """
+    # First check processed_results directory
+    processed_dir = os.path.join(directory, "processed_results")
+    if os.path.exists(processed_dir):
+        json_files = []
+        for file in os.listdir(processed_dir):
+            if file.lower().endswith('.json'):
+                json_files.append(os.path.join(processed_dir, file))
+        if json_files:
+            # Sort by modification time to get the most recent file
+            json_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+            return [json_files[0]]  # Return only the most recent file
+    
+    # If no JSON files in processed_results, check the main directory
     json_files = []
     for file in os.listdir(directory):
         if file.lower().endswith('.json'):
@@ -391,18 +404,19 @@ class CanopyAnalyzer:
         # Look for JSON files containing classification data
         json_files = find_json_files(folder_path)
         self.classification_data = {}
+        self.custom_params = {}
         
         if json_files:
-            messagebox.showinfo("Found JSON Files", f"Found {len(json_files)} JSON file(s) in the folder. Checking for previous classification data.")
+            messagebox.showinfo("Found JSON Files", f"Found {len(json_files)} JSON file(s). Loading the most recent one.")
             # Load classification data from JSON files
             self.classification_data = load_classification_data(json_files, image_files)
             
-            # Also load custom parameters if available
-            self.custom_params = {}
+            # Load custom parameters if available
             for json_file in json_files:
                 try:
                     with open(json_file, 'r') as f:
                         data = json.load(f)
+                        print(f"Loading JSON file: {json_file}")  # Debug print
                         
                     # Process each entry in the JSON
                     for file_path, result in data.items():
@@ -411,7 +425,9 @@ class CanopyAnalyzer:
                         matching_files = [img for img in image_files if os.path.basename(img) == basename]
                         
                         if matching_files and "custom_parameters" in result:
+                            print(f"Found custom parameters for {basename}")  # Debug print
                             self.custom_params[matching_files[0]] = result["custom_parameters"]
+                            print(f"Custom parameters: {result['custom_parameters']}")  # Debug print
                 except Exception as e:
                     print(f"Error loading JSON file {json_file}: {str(e)}")
             
@@ -428,6 +444,39 @@ class CanopyAnalyzer:
         
         # Process and display first image
         if self.batch_file_list:
+            # Process all images with loaded settings
+            for file_path in self.batch_file_list:
+                print(f"\nProcessing image: {os.path.basename(file_path)}")  # Debug print
+                
+                # Get custom parameters if available
+                custom_params = self.custom_params.get(file_path, {})
+                if custom_params:
+                    print(f"Applying custom parameters: {custom_params}")  # Debug print
+                
+                # Get classification data if available
+                classification_data = self.classification_data.get(file_path, {})
+                custom_center = classification_data.get("mask_center")
+                custom_classification = classification_data.get("classification")
+                
+                # Process the image with loaded settings
+                self.process_image_with_center(file_path, custom_center, custom_classification)
+                
+                # If we have custom parameters, apply them
+                if custom_params:
+                    # Update parameter variables
+                    for param_name, value in custom_params.items():
+                        if param_name in self.param_vars:
+                            self.param_vars[param_name].set(value)
+                            print(f"Set {param_name} to {value}")  # Debug print
+                    
+                    # Store the custom parameters in batch results
+                    if file_path in self.batch_results:
+                        self.batch_results[file_path]["custom_parameters"] = custom_params
+                    
+                    # Reanalyze with custom parameters
+                    self.reanalyze_with_custom_parameters()
+            
+            # Display first image
             self.process_and_display_image(self.batch_file_list[0])
             
             # Update navigation buttons
@@ -436,6 +485,11 @@ class CanopyAnalyzer:
             # Update file count
             self.file_count_label.config(text=f"Image: 1 / {len(self.batch_file_list)}")
             
+            # If we have custom parameters, show the adjustment panel
+            if self.custom_params:
+                self.show_adjust_var.set(True)
+                self.toggle_adjustment_panel()
+    
     def process_and_display_image(self, file_path):
         self.current_file_path = file_path
         
@@ -836,27 +890,19 @@ class CanopyAnalyzer:
         # Run the analysis
         self.canopy_results = analyzer.batch_process(image_data_dict)
         
-        # Ask user where to save the JSON results
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json")],
-            title="Save Canopy Analysis Results"
-        )
+        # Create output directory if it doesn't exist
+        output_dir = os.path.join(os.path.dirname(self.batch_file_list[0]), "processed_results")
+        os.makedirs(output_dir, exist_ok=True)
         
-        if not save_path:
-            # User cancelled, but still keep results in memory
-            messagebox.showinfo("Analysis Complete", 
-                              "Canopy analysis completed. Results are stored in memory but not saved.")
-            # Enable export button
-            self.export_visualizations_button.config(state=tk.NORMAL)
-            return
-            
+        # Create output file path with timestamp
+        output_file = os.path.join(output_dir, f"canopy_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        
         # Save to JSON file
         try:
             # Format results for saving
             results_to_save = {}
             for file_path, result in self.canopy_results.items():
-                results_to_save[file_path] = {
+                results_to_save[os.path.basename(file_path)] = {
                     'file_name': os.path.basename(file_path),
                     'classification': result['classification'],
                     'center_point': {
@@ -869,11 +915,11 @@ class CanopyAnalyzer:
                     'canopy_percentage': float(result['canopy_percentage'])
                 }
                 
-            with open(save_path, 'w') as f:
+            with open(output_file, 'w') as f:
                 json.dump(results_to_save, f, indent=4)
                 
-            messagebox.showinfo("Save Successful", 
-                              f"Canopy analysis completed and results saved to {save_path}")
+            messagebox.showinfo("Analysis Complete", 
+                              f"Canopy analysis completed and results saved to {output_file}")
             
             # Enable export visualizations button
             self.export_visualizations_button.config(state=tk.NORMAL)
@@ -884,19 +930,15 @@ class CanopyAnalyzer:
             
         except Exception as e:
             messagebox.showerror("Save Error", f"Error saving results: {str(e)}")
-            
+    
     def export_visualizations(self):
         """Export visualization images and CSV data"""
         if not hasattr(self, 'canopy_results') or not self.canopy_results:
             messagebox.showinfo("No Results", "No canopy analysis results available. Please run canopy analysis first.")
             return
             
-        # Ask user to select or create output folder
-        output_dir = filedialog.askdirectory(title="Select Output Folder for Visualizations")
-        if not output_dir:
-            return
-            
         # Create output directory if it doesn't exist
+        output_dir = os.path.join(os.path.dirname(self.batch_file_list[0]), "processed_results")
         os.makedirs(output_dir, exist_ok=True)
         
         # Prepare progress reporting
@@ -966,7 +1008,7 @@ class CanopyAnalyzer:
                     
                     # Add data to CSV records
                     csv_data.append({
-                        'image_path': file_path,
+                        'image_path': os.path.basename(file_path),
                         'center': [center[0], center[1]],
                         'avg_hue': avg_hue,
                         'avg_saturation': avg_saturation,
@@ -978,25 +1020,94 @@ class CanopyAnalyzer:
                         'canopy_density': result['canopy_pixels'] / result['total_pixels']
                     })
                     
+                    # Add custom parameters if they exist
+                    if file_path in self.custom_params:
+                        csv_data[-1].update(self.custom_params[file_path])
+                    
         # Save CSV file
         csv_path = os.path.join(output_dir, 'image_analysis_logs.csv')
+        
+        # Check if CSV file exists and read existing data
+        existing_data = []
+        if os.path.exists(csv_path):
+            with open(csv_path, 'r', newline='') as csvfile:
+                reader = csv.DictReader(csvfile)
+                existing_data = list(reader)
+        
+        # Update or append new data
+        for new_row in csv_data:
+            # Find if this image already exists in the data
+            found = False
+            for i, existing_row in enumerate(existing_data):
+                if existing_row['image_path'] == new_row['image_path']:
+                    # Update existing row
+                    existing_data[i] = new_row
+                    found = True
+                    break
+            if not found:
+                # Append new row
+                existing_data.append(new_row)
+        
+        # Write updated data back to CSV
         with open(csv_path, 'w', newline='') as csvfile:
-            fieldnames = ['image_path', 'center', 'avg_hue', 'avg_saturation', 
-                         'avg_value', 'avg_brightness', 'total_pixels', 
-                         'sky_pixels', 'canopy_pixels', 'canopy_density']
+            # Define the desired column order
+            main_columns = [
+                'image_path',
+                'center',
+                'avg_hue',
+                'avg_saturation',
+                'avg_value',
+                'avg_brightness',
+                'total_pixels',
+                'sky_pixels',
+                'canopy_pixels',
+                'canopy_density',
+            ]
+            # Collect all extra columns (custom parameters)
+            extra_columns = set()
+            for row in existing_data:
+                extra_columns.update(row.keys())
+            extra_columns = [col for col in extra_columns if col not in main_columns]
+            # Final fieldnames: main columns first, then extras
+            fieldnames = main_columns + sorted(extra_columns)
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            
             writer.writeheader()
-            for row in csv_data:
+            for row in existing_data:
                 writer.writerow(row)
+        
+        # Create a new JSON file with all results including custom parameters
+        json_output = {}
+        for file_path, result in self.canopy_results.items():
+            basename = os.path.basename(file_path)
+            json_output[basename] = {
+                'file_name': basename,
+                'classification': result['classification'],
+                'center_point': {
+                    'x': int(result['center_point'][0]),
+                    'y': int(result['center_point'][1])
+                },
+                'sky_pixels': int(result['sky_pixels']),
+                'canopy_pixels': int(result['canopy_pixels']),
+                'total_pixels': int(result['total_pixels']),
+                'canopy_percentage': float(result['canopy_percentage'])
+            }
+            
+            # Add custom parameters if they exist
+            if file_path in self.custom_params:
+                json_output[basename]['custom_parameters'] = self.custom_params[file_path]
+        
+        # Save the JSON file
+        json_path = os.path.join(output_dir, f"canopy_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        with open(json_path, 'w') as f:
+            json.dump(json_output, f, indent=4)
         
         # Close progress window
         progress_window.destroy()
         
         # Notify user of completion
         messagebox.showinfo("Export Complete", 
-                          f"Exported {total_images} visualizations and CSV data to:\n{output_dir}")
-        
+                          f"Exported {total_images} visualizations and updated CSV data to:\n{output_dir}")
+    
     def create_and_save_visualization(self, file_path, result, output_dir):
         """Create and save visualization images for a single processed image"""
         # Load image
