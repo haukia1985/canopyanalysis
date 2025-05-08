@@ -1,0 +1,21 @@
+How to install
+
+Install latest version of python via website
+Open terminal and write 
+Python3 —version 
+Confirm version number matches the latest version
+Close terminal window and open a new one
+Write
+Pip install - -upgrade (IF “no command” error do pip3 install - - upgrade)
+Install / upgrade latest pip
+(NOTE: MAC tends to need every terminal command to have 3 added to the line. Pip -> pip3 python -> python3
+
+Download Zip from Github, extract the contents to where you want 
+Go to folder and copy it’s path (alt click copy path) 
+Open Terminal, write
+cd (paste path to folder) 
+Then, write pip install -r requirements.txt 
+Wait for installation to be completed — might take a moment. if errors you likely need to update pip or python
+If no errors, no need to upgrade pip even if prompted
+Then, using the same terminal window, write 
+Python main.py OR Python3 main.py 
