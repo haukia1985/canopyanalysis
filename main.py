@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import os
 from PIL import Image, ImageTk
+from PIL.ExifTags import TAGS, GPSTAGS  # <-- NEW IMPORT
 import cv2
 import numpy as np
 import config
@@ -212,11 +213,64 @@ def process_single_image(image_path, custom_center=None, custom_classification=N
     
     return image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center
 
+# --- NEW HELPER FUNCTIONS FOR GPS ---
+
+def _convert_to_degrees(value):
+    """Helper function to convert GPS DMS (degrees, minutes, seconds) to decimal degrees."""
+    d = float(value[0])
+    m = float(value[1])
+    s = float(value[2])
+    return d + (m / 60.0) + (s / 3600.0)
+
+def get_gps_data(image_path):
+    """Extracts GPS latitude and longitude from an image's EXIF data."""
+    try:
+        img = Image.open(image_path)
+        exif_data = img._getexif()
+        
+        if not exif_data:
+            return None
+
+        # Find the GPSInfo tag (ID 34853)
+        gps_info_raw = exif_data.get(34853)
+        if not gps_info_raw:
+            return None
+
+        # Process GPS data into a readable dict
+        gps_info = {}
+        for tag_id, value in gps_info_raw.items():
+            tag_name = GPSTAGS.get(tag_id, tag_id)
+            gps_info[tag_name] = value
+        
+        # Check for essential tags
+        lat = gps_info.get('GPSLatitude')
+        lat_ref = gps_info.get('GPSLatitudeRef')
+        lon = gps_info.get('GPSLongitude')
+        lon_ref = gps_info.get('GPSLongitudeRef')
+
+        if lat and lat_ref and lon and lon_ref:
+            lat_decimal = _convert_to_degrees(lat)
+            if lat_ref == 'S':
+                lat_decimal = -lat_decimal
+            
+            lon_decimal = _convert_to_degrees(lon)
+            if lon_ref == 'W':
+                lon_decimal = -lon_decimal
+            
+            return {"latitude": lat_decimal, "longitude": lon_decimal}
+        
+        return None
+    except Exception as e:
+        print(f"Error reading EXIF data for {image_path}: {e}")
+        return None
+
+# --- END OF NEW HELPER FUNCTIONS ---
+
 class CanopyAnalyzer:
     def __init__(self, root):
         self.root = root
         self.root.title("Canopy Cover Analysis - Image Classification")
-        self.root.geometry("1000x700")
+        self.root.geometry("1200x700")  # Increased default size
         
         # Data structures for batch processing
         self.batch_results = {}  # Dict to store all results {filepath: {results...}}
@@ -232,9 +286,23 @@ class CanopyAnalyzer:
         # Create main frame
         self.main_frame = ttk.Frame(root, padding="10")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- Create PanedWindow for Left/Right Split ---
+        self.paned_window = ttk.PanedWindow(self.main_frame, orient=tk.HORIZONTAL)
+        self.paned_window.pack(fill=tk.BOTH, expand=True)
+
+        # --- Create Left Panel for Controls ---
+        self.left_panel_frame = ttk.Frame(self.paned_window, padding="5")
+        self.paned_window.add(self.left_panel_frame, weight=1)
+
+        # --- Create Right Panel for Image Viewer ---
+        self.right_panel_frame = ttk.Frame(self.paned_window, padding="5")
+        self.paned_window.add(self.right_panel_frame, weight=1) # Start with 50/50 split
+        
+        # --- Populate Left Panel ---
         
         # Create button frame
-        self.button_frame = ttk.Frame(self.main_frame)
+        self.button_frame = ttk.Frame(self.left_panel_frame)
         self.button_frame.pack(fill=tk.X, pady=5)
         
         # Create load buttons
@@ -246,18 +314,18 @@ class CanopyAnalyzer:
         
         # Create config toggle button
         self.show_config_var = tk.BooleanVar(value=False)
-        self.show_config_button = ttk.Checkbutton(self.button_frame, text="Show Config Values", 
+        self.show_config_button = ttk.Checkbutton(self.button_frame, text="Show Config", 
                                                 variable=self.show_config_var, command=self.toggle_config_display)
         self.show_config_button.pack(side=tk.RIGHT, padx=5)
         
         # Create HSV adjustment toggle button
         self.show_adjust_var = tk.BooleanVar(value=False)
-        self.show_adjust_button = ttk.Checkbutton(self.button_frame, text="Adjust Parameters", 
+        self.show_adjust_button = ttk.Checkbutton(self.button_frame, text="Adjust Params", 
                                                 variable=self.show_adjust_var, command=self.toggle_adjustment_panel)
         self.show_adjust_button.pack(side=tk.RIGHT, padx=5)
         
         # Create info frame for classification details
-        self.info_frame = ttk.LabelFrame(self.main_frame, text="Classification Details")
+        self.info_frame = ttk.LabelFrame(self.left_panel_frame, text="Classification Details")
         self.info_frame.pack(fill=tk.X, pady=5)
         
         # Create classification display labels
@@ -280,7 +348,8 @@ class CanopyAnalyzer:
         self.file_count_label.grid(row=1, column=1, padx=10, pady=2, sticky=tk.W)
         
         # Create config frame - initially hidden
-        self.config_frame = ttk.LabelFrame(self.main_frame, text="Configuration Values")
+        self.config_frame = ttk.LabelFrame(self.left_panel_frame, text="Configuration Values")
+        # (Will be packed/unpacked by toggle_config_display)
         
         # Create a frame for config values with scrollbar
         self.config_canvas = tk.Canvas(self.config_frame)
@@ -300,11 +369,12 @@ class CanopyAnalyzer:
         self.populate_config_frame()
         
         # Create parameter adjustment frame - initially hidden
-        self.adjustment_frame = ttk.LabelFrame(self.main_frame, text="Parameter Adjustment")
+        self.adjustment_frame = ttk.LabelFrame(self.left_panel_frame, text="Parameter Adjustment")
         self.create_adjustment_panel()
+        # (Will be packed/unpacked by toggle_adjustment_panel)
         
         # Create batch navigation frame
-        self.nav_frame = ttk.Frame(self.main_frame)
+        self.nav_frame = ttk.Frame(self.left_panel_frame)
         self.nav_frame.pack(fill=tk.X, pady=5)
         
         self.prev_button = ttk.Button(self.nav_frame, text="Previous", command=self.prev_image, state=tk.DISABLED)
@@ -314,7 +384,7 @@ class CanopyAnalyzer:
         self.next_button.pack(side=tk.LEFT, padx=5)
         
         # Classification override options
-        self.class_frame = ttk.LabelFrame(self.main_frame, text="Override Classification")
+        self.class_frame = ttk.LabelFrame(self.left_panel_frame, text="Override Classification")
         self.class_frame.pack(fill=tk.X, pady=5)
         
         self.classification_var = tk.StringVar()
@@ -334,18 +404,42 @@ class CanopyAnalyzer:
         self.save_all_button.pack(side=tk.RIGHT, padx=5, pady=5)
         
         # Add buttons for canopy analysis and export
-        self.process_canopy_button = ttk.Button(self.class_frame, text="Process Canopy Analysis", 
-                                               command=self.process_canopy_analysis)
-        self.process_canopy_button.pack(side=tk.RIGHT, padx=5, pady=5)
+        # self.process_canopy_button = ttk.Button(self.class_frame, text="Process Canopy Analysis", 
+        #                                        command=self.process_canopy_analysis)
+        # self.process_canopy_button.pack(side=tk.RIGHT, padx=5, pady=5)
         
-        self.export_visualizations_button = ttk.Button(self.class_frame, text="Export Visualizations", 
+        self.export_visualizations_button = ttk.Button(self.class_frame, text="Analyze and Export All", 
                                                       command=self.export_visualizations, state=tk.DISABLED)
         self.export_visualizations_button.pack(side=tk.RIGHT, padx=5, pady=5)
         
+        # --- Populate Right Panel ---
+        
         # Create image display area
-        self.image_frame = ttk.LabelFrame(self.main_frame, text="Image Preview")
+        self.image_frame = ttk.LabelFrame(self.right_panel_frame, text="Image Preview")
         self.image_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
+        # --- Image Viewer Controls (Bottom) ---
+        self.image_controls_frame = ttk.Frame(self.image_frame)
+        self.image_controls_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
+
+        # State variable for the toggle button
+        self.show_mask_preview = tk.BooleanVar(value=True)
+        
+        # Mask toggle button
+        self.mask_toggle_button = ttk.Checkbutton(
+            self.image_controls_frame, 
+            text="Show Mask Overlay", 
+            variable=self.show_mask_preview, 
+            command=self.refresh_image_display
+        )
+        self.mask_toggle_button.pack(side=tk.LEFT, padx=10)
+        
+        # Instructions label for image clicking
+        self.instructions_label = ttk.Label(self.image_controls_frame, 
+                                         text="Click on the image to reposition the analysis mask")
+        self.instructions_label.pack(side=tk.RIGHT, padx=10)
+        
+        # --- Image Label ---
         self.image_label = ttk.Label(self.image_frame)
         self.image_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
@@ -354,6 +448,8 @@ class CanopyAnalyzer:
         
         # Bind configure event to the image_frame to track resizing
         self.image_frame.bind("<Configure>", self.on_frame_resize)
+
+        # --- End of __init__ ---
         
         self.current_image = None
         self.processed_image = None
@@ -365,23 +461,24 @@ class CanopyAnalyzer:
         # Store the last displayed image to avoid resizing issues
         self.last_displayed_cv_image = None
         
-        # Instructions label for image clicking
-        self.instructions_label = ttk.Label(self.image_frame, 
-                                         text="Click on the image to reposition the analysis mask")
-        self.instructions_label.pack(side=tk.BOTTOM, pady=5)
-        
     def load_image(self):
         file_path = filedialog.askopenfilename(
             filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")]
         )
         if file_path:
-            self.process_and_display_image(file_path)
-            # Reset batch navigation
+            # Set this as the only file in the batch
             self.batch_file_list = [file_path]
             self.current_batch_index = 0
+            
+            # Process and display the single image
+            self.process_and_display_image(file_path)
+            
+            # Update file count
             self.file_count_label.config(text=f"Image: 1 / 1")
             self.prev_button.config(state=tk.DISABLED)
             self.next_button.config(state=tk.DISABLED)
+            # Enable export button even for single image
+            self.export_visualizations_button.config(state=tk.NORMAL)
     
     def load_batch(self):
         folder_path = filedialog.askdirectory(title="Select Folder with Images")
@@ -441,40 +538,15 @@ class CanopyAnalyzer:
         self.batch_file_list = image_files
         self.current_batch_index = 0
         self.batch_results = {}
+        self.canopy_results = {} # Clear old canopy results
         
         # Process and display first image
         if self.batch_file_list:
-            # Process all images with loaded settings
-            for file_path in self.batch_file_list:
-                print(f"\nProcessing image: {os.path.basename(file_path)}")  # Debug print
-                
-                # Get custom parameters if available
-                custom_params = self.custom_params.get(file_path, {})
-                if custom_params:
-                    print(f"Applying custom parameters: {custom_params}")  # Debug print
-                
-                # Get classification data if available
-                classification_data = self.classification_data.get(file_path, {})
-                custom_center = classification_data.get("mask_center")
-                custom_classification = classification_data.get("classification")
-                
-                # Process the image with loaded settings
-                self.process_image_with_center(file_path, custom_center, custom_classification)
-                
-                # If we have custom parameters, apply them
-                if custom_params:
-                    # Update parameter variables
-                    for param_name, value in custom_params.items():
-                        if param_name in self.param_vars:
-                            self.param_vars[param_name].set(value)
-                            print(f"Set {param_name} to {value}")  # Debug print
-                    
-                    # Store the custom parameters in batch results
-                    if file_path in self.batch_results:
-                        self.batch_results[file_path]["custom_parameters"] = custom_params
-                    
-                    # Reanalyze with custom parameters
-                    self.reanalyze_with_custom_parameters()
+            
+            # *** MODIFICATION ***
+            # We no longer loop and process all images here.
+            # We just display the first one, and process_and_display_image
+            # will handle the analysis.
             
             # Display first image
             self.process_and_display_image(self.batch_file_list[0])
@@ -489,77 +561,156 @@ class CanopyAnalyzer:
             if self.custom_params:
                 self.show_adjust_var.set(True)
                 self.toggle_adjustment_panel()
+
+            # Enable the export button now that a batch is loaded
+            self.export_visualizations_button.config(state=tk.NORMAL)
     
     def process_and_display_image(self, file_path):
+        """
+        Master function to display an image.
+        It checks if the image has been processed. If yes, it displays
+        the cached results. If no, it calls process_image_with_center
+        to perform the full analysis.
+        """
         self.current_file_path = file_path
         
-        # Check if we've already processed this image
-        if file_path in self.batch_results:
-            # Use cached results
-            result = self.batch_results[file_path]
-            
-            # If we have canopy results, show those
-            if file_path in self.canopy_results:
-                self.display_canopy_analysis(file_path)
-                return
-                
-            # Otherwise, show classification view
-            # Check if we have the display image with mask
-            if "display_image" in result:
-                display_image = result["display_image"]
-                # If we have a custom center, use it
-                custom_center = result.get("mask_center", None)
-                self.update_display(
-                    result["classification"], 
-                    result["avg_brightness"], 
-                    result["white_percent"], 
-                    result["bright_percent"], 
-                    display_image,
-                    file_path,
-                    custom_center
-                )
+        # --- NEW LOGIC TO RESET PARAM ADJUSTMENT PANEL ---
+        # When loading a new image, reset the sliders to match
+        # that image's saved state (either custom or default).
+        if self.show_adjust_var.get():
+            if file_path in self.custom_params:
+                # This image has saved custom params. Load them.
+                params = self.custom_params[file_path]
+                for param_name, value in params.items():
+                    if param_name in self.param_vars:
+                        self.param_vars[param_name].set(value)
+                self.custom_params_label.config(text="Using Custom Parameters", foreground="blue")
+                self.using_custom_params = True
             else:
-                # Process the image with the original image to get the display image
-                self.process_image_with_center(file_path)
+                # This image uses default params. Reset sliders.
+                self.reset_parameters(reanalyze=False) # No re-analyze, it's about to load
         else:
-            # Check if we have classification data for this image
-            if hasattr(self, 'classification_data') and file_path in self.classification_data:
-                data = self.classification_data[file_path]
-                # Process with the saved mask center and classification
-                self.process_image_with_center(
-                    file_path, 
-                    custom_center=data.get("mask_center", None),
-                    custom_classification=data.get("classification", None)
-                )
+             # If panel is hidden, ensure flag is reset
+             self.using_custom_params = False
+        # --- END NEW LOGIC ---
+        
+        # Check for *canopy* results, not just batch results.
+        if file_path in self.canopy_results:
+            # We have full results! Just display them.
+            self.display_canopy_analysis(file_path)
+            
+            # Also load custom params into sliders if they exist
+            if file_path in self.custom_params:
+                params = self.custom_params[file_path]
+                for param_name, value in params.items():
+                    if param_name in self.param_vars:
+                        self.param_vars[param_name].set(value)
+            
+            # Ensure the classification combobox is correct
+            self.classification_var.set(self.canopy_results[file_path]['classification'])
+            return
+            
+        elif file_path in self.batch_results:
+            # This state (red circle, no green/blue) should no longer
+            # happen on initial load, but we'll handle it for robustness.
+            # It means we need to generate the canopy analysis.
+            
+            # 1. Get existing data
+            result = self.batch_results[file_path]
+            custom_center = result.get("mask_center", None)
+            
+            # 2. Update display with red circle
+            self.update_display(
+                result["classification"], 
+                result["avg_brightness"], 
+                result["white_percent"], 
+                result["bright_percent"], 
+                result["display_image"], # Red circle
+                file_path,
+                custom_center
+            )
+            
+            # 3. Run canopy analysis
+            if file_path in self.custom_params:
+                # Load params
+                params = self.custom_params[file_path]
+                for param_name, value in params.items():
+                    if param_name in self.param_vars:
+                        self.param_vars[param_name].set(value)
+                self.reanalyze_with_custom_parameters(file_path)
             else:
-                # Process the image with default center
-                self.process_image_with_center(file_path)
+                self.reanalyze_canopy_with_new_classification(file_path)
+        
+        else:
+            # This file has *never* been processed. This is the new
+            # standard path for loading any new image.
+            
+            # Check JSON data for this file
+            classification_data = self.classification_data.get(file_path, {})
+            custom_center = classification_data.get("mask_center")
+            custom_classification = classification_data.get("classification")
+
+            # Run the *full* processing (red circle + green/blue)
+            self.process_image_with_center(
+                file_path, 
+                custom_center=custom_center,
+                custom_classification=custom_classification
+            )
     
     def process_image_with_center(self, file_path, custom_center=None, custom_classification=None):
-        """Process an image with optional custom center point and classification"""
-        # Process the image
+        """
+        Process an image with optional custom center point and classification.
+        This function now performs the *full* analysis:
+        1. Classification (red circle)
+        2. Canopy Analysis (green/blue mask)
+        """
+        # Process the image (gets red circle info)
         image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center = process_single_image(file_path, custom_center, custom_classification)
         
         if image is None:
             messagebox.showerror("Error", f"Could not load image: {file_path}")
             return
                 
-        # Store original image for reprocessing with different mask centers
+        # Store original image for reprocessing
         self.original_image = image
                 
-        # Store results in batch dictionary
+        # Store results in batch dictionary (red circle)
         self.batch_results[file_path] = {
             "classification": classification,
             "avg_brightness": avg_brightness,
-            "white_percent": white_percent,
+            "white_percent": bright_percent,
             "bright_percent": bright_percent,
             "masked_image": masked_image,
             "display_image": display_image,
             "mask_center": center
         }
             
-        # Update display with the results
-        self.update_display(classification, avg_brightness, white_percent, bright_percent, display_image, file_path, center)
+        # Update display with the results (shows red circle temporarily)
+        # Only update display if it's the current file
+        if file_path == self.current_file_path:
+            self.update_display(classification, avg_brightness, white_percent, bright_percent, display_image, file_path, center)
+        
+        # --- *** MODIFICATION *** ---
+        # Now that the basic classification is done and displayed,
+        # automatically run the canopy analysis (green/blue mask).
+        
+        # Check if custom params are saved OR if sliders are currently active
+        # and we are processing the current image
+        if file_path in self.custom_params or (self.using_custom_params and file_path == self.current_file_path):
+            
+            # If saved params exist, load them into sliders
+            if file_path in self.custom_params and file_path == self.current_file_path:
+                params = self.custom_params[file_path]
+                for param_name, value in params.items():
+                    if param_name in self.param_vars:
+                        self.param_vars[param_name].set(value)
+            
+            # Run analysis with custom params
+            self.reanalyze_with_custom_parameters(file_path)
+        else:
+            # Run analysis with default params
+            self.reanalyze_canopy_with_new_classification(file_path)
+        # --- *** END MODIFICATION *** ---
     
     def update_display(self, classification, avg_brightness, white_percent, bright_percent, display_image, file_path, center=None):
         # Update classification display
@@ -576,6 +727,8 @@ class CanopyAnalyzer:
         self.file_name_label.config(text=f"File: {os.path.basename(file_path)}")
         
         # Display the image with mask overlay
+        # This will show the red-circle image, which is
+        # soon replaced by the green/blue mask
         self.display_image(display_image)
         
         # Set the classification dropdown to the current classification
@@ -618,6 +771,11 @@ class CanopyAnalyzer:
         
         # Set the new center point and reprocess
         new_center = (orig_x, orig_y)
+        
+        # Make sure mask preview is on to see the change
+        self.show_mask_preview.set(True)
+        
+        # This will re-run the *full* analysis (red + green/blue)
         self.process_image_with_center(self.current_file_path, new_center)
     
     def next_image(self):
@@ -658,54 +816,50 @@ class CanopyAnalyzer:
             # If we're currently viewing canopy analysis, re-analyze with the new classification
             if hasattr(self, 'canopy_results') and self.current_file_path in self.canopy_results:
                 # Re-analyze the current image with new classification
-                self.reanalyze_canopy_with_new_classification()
+                self.reanalyze_canopy_with_new_classification(self.current_file_path)
     
-    def reanalyze_canopy_with_new_classification(self):
-        """Re-analyze the current image with the new classification and update display"""
-        if not self.current_file_path or not hasattr(self, 'canopy_results'):
-            return
-            
-        # Get the new classification and center point
-        classification = self.classification_var.get()
+    def reanalyze_canopy_with_new_classification(self, file_path_to_process):
+        """Re-analyze the specified image with default params and update display"""
+        if file_path_to_process not in self.batch_results:
+            print(f"Error: Cannot reanalyze {file_path_to_process}, no batch results found.")
+            return 
+
+        # Get the classification and center point from the stored batch results
+        classification = self.batch_results[file_path_to_process]["classification"]
+        center_point = self.batch_results[file_path_to_process]["mask_center"]
         
-        # Get the center point from the batch results (keep the same center)
-        if self.current_file_path in self.batch_results:
-            center_point = self.batch_results[self.current_file_path]["mask_center"]
+        # Create a new analyzer and process the image
+        analyzer = CanopyAnalyzerModule(config)
+        new_result = analyzer.analyze_image(
+            file_path_to_process,
+            center_point, 
+            classification
+        )
+        
+        if new_result:
+            # Update the canopy results for this image
+            self.canopy_results[file_path_to_process] = new_result
             
-            # Create a new analyzer and process the image
-            analyzer = CanopyAnalyzerModule(config)
-            new_result = analyzer.analyze_image(
-                self.current_file_path,
-                center_point, 
-                classification
-            )
-            
-            if new_result:
-                # Update the canopy results for this image
-                self.canopy_results[self.current_file_path] = new_result
+            # If this is the currently viewed image, update the UI
+            if file_path_to_process == self.current_file_path:
+                self.display_canopy_analysis(file_path_to_process)
                 
-                # Update the display
-                self.display_canopy_analysis(self.current_file_path)
-                
-                # Add a status message instead of a popup
+                # Add a status message
                 self.status_message = f"Analysis updated with {classification} classification"
-                
-                # Show a temporary status message under the image
                 self.update_status_message(self.status_message)
     
     def update_status_message(self, message, duration=3000):
         """Display a temporary status message"""
         if not hasattr(self, 'status_label'):
             # Create a status label if it doesn't exist
-            self.status_label = ttk.Label(self.image_frame, text=message, 
+            self.status_label = ttk.Label(self.image_controls_frame, text=message, 
                                          font=("Arial", 10), foreground="blue")
-            self.status_label.pack(side=tk.BOTTOM, pady=5, before=self.instructions_label)
         else:
             # Update existing label
             self.status_label.config(text=message)
         
         # Make sure it's visible
-        self.status_label.pack(side=tk.BOTTOM, pady=5, before=self.instructions_label)
+        self.status_label.pack(side=tk.LEFT, padx=10, before=self.mask_toggle_button)
         
         # Clear the message after the specified duration
         self.root.after(duration, self.clear_status_message)
@@ -763,10 +917,53 @@ class CanopyAnalyzer:
         self.frame_was_resized = True
         
         # If we have an image loaded, redisplay it with the new frame size
-        if self.last_displayed_cv_image is not None:
-            self.display_image(self.last_displayed_cv_image, force_resize=True)
+        # Use the refresh_image_display to respect the toggle state
+        self.refresh_image_display(force_resize=True)
     
+    def refresh_image_display(self, force_resize=False):
+        """
+        Master function to update the image label.
+        It decides WHICH image to show based on the current state
+        (mask toggle, canopy analysis, etc.) and then calls
+        display_image to perform the rendering.
+        """
+        if not self.current_file_path:
+            return
+
+        image_to_display = None
+
+        if self.show_mask_preview.get():
+            # --- MASK PREVIEW ON ---
+            if self.current_file_path in self.canopy_results and "overlay_image" in self.canopy_results[self.current_file_path]:
+                # 1. Show canopy analysis (green/blue) if available
+                image_to_display = self.canopy_results[self.current_file_path]["overlay_image"]
+            elif self.current_file_path in self.batch_results and "display_image" in self.batch_results[self.current_file_path]:
+                # 2. Show classification (red circle) if available
+                image_to_display = self.batch_results[self.current_file_path]["display_image"]
+        else:
+            # --- MASK PREVIEW OFF ---
+            # 3. Show original image
+            if self.original_image is not None:
+                image_to_display = self.original_image
+            else: 
+                # Fallback to loading it if not in memory
+                self.original_image = cv2.imread(self.current_file_path)
+                image_to_display = self.original_image
+
+        if image_to_display is not None:
+            self.display_image(image_to_display, force_resize=force_resize)
+        else:
+            # As a last resort, try to load the original image
+            if self.original_image is None:
+                self.original_image = cv2.imread(self.current_file_path)
+            if self.original_image is not None:
+                self.display_image(self.original_image, force_resize=force_resize)
+            
     def display_image(self, image, force_resize=False):
+        """
+        Low-level function to render a given OpenCV image to the
+        image_label. Handles resizing and Tkinter PhotoImage conversion.
+        """
         # Store the OpenCV image for potential redisplay
         self.last_displayed_cv_image = image.copy()
         
@@ -856,83 +1053,94 @@ class CanopyAnalyzer:
         if not self.current_file_path or self.original_image is None:
             return
             
+        # Ensure mask is visible to see the change
+        self.show_mask_preview.set(True)
+            
         # Process the image with default center (None will use image center)
         self.process_image_with_center(self.current_file_path, None)
         
-    def process_canopy_analysis(self):
-        """Process all images for canopy analysis and save results"""
+    # def process_canopy_analysis(self):
+    #     """
+    #     This function is now DEPRECATED.
+    #     Its logic has been moved to export_visualizations().
+    #     """
+    #     pass # Logic moved to export_visualizations
+    
+    def export_visualizations(self):
+        """
+        Process any remaining images and export visualization images, CSV data, and JSON results.
+        This function now incorporates the logic from the old process_canopy_analysis.
+        """
+        # --- START of logic to process missing files ---
         if not self.batch_file_list:
             messagebox.showinfo("No Batch", "No images loaded. Please load an image folder first.")
             return
-            
-        # Inform user that processing is starting
-        messagebox.showinfo("Processing", "Analyzing canopy coverage for all images. This may take a moment...")
         
-        # Process any unprocessed images first to ensure we have all classifications
-        missing_files = [file_path for file_path in self.batch_file_list if file_path not in self.batch_results]
+        # Check for unprocessed images
+        missing_files = [file_path for file_path in self.batch_file_list if file_path not in self.canopy_results]
+        
         if missing_files:
+            print(f"Found {len(missing_files)} unprocessed images. Analyzing them now...")
+
+            # --- FIX ---
+            # Temporarily reset the "active slider" flag to False.
+            # This ensures that process_image_with_center (called below)
+            # will only use *saved* custom parameters (from JSON)
+            # and not the *active* slider values from the last-viewed image.
+            current_slider_state = self.using_custom_params
+            self.using_custom_params = False
+            # --- END FIX ---
+
+            # Create progress window for *analysis*
+            analysis_progress_window = tk.Toplevel(self.root)
+            analysis_progress_window.title("Analyzing Images")
+            analysis_progress_window.geometry("300x100")
+            
+            analysis_label = ttk.Label(analysis_progress_window, text="Analyzing unprocessed images...")
+            analysis_label.pack(pady=10)
+            
+            analysis_bar = ttk.Progressbar(analysis_progress_window, orient="horizontal", 
+                                          length=250, mode="determinate", maximum=len(missing_files))
+            analysis_bar.pack(pady=10)
+            analysis_progress_window.update()
+            
+            processed_count = 0
             for file_path in missing_files:
-                # Process with default parameters
-                self.process_image_with_center(file_path)
-        
-        # Initialize the CanopyAnalyzerModule with config
-        analyzer = CanopyAnalyzerModule(config)
-        
-        # Prepare data for the analyzer
-        image_data_dict = {
-            file_path: {
-                'center_point': self.batch_results[file_path]['mask_center'],
-                'classification': self.batch_results[file_path]['classification']
-            }
-            for file_path in self.batch_results
-        }
-        
-        # Run the analysis
-        self.canopy_results = analyzer.batch_process(image_data_dict)
-        
-        # Create output directory if it doesn't exist
-        output_dir = os.path.join(os.path.dirname(self.batch_file_list[0]), "processed_results")
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Create output file path with timestamp
-        output_file = os.path.join(output_dir, f"canopy_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-        
-        # Save to JSON file
-        try:
-            # Format results for saving
-            results_to_save = {}
-            for file_path, result in self.canopy_results.items():
-                results_to_save[os.path.basename(file_path)] = {
-                    'file_name': os.path.basename(file_path),
-                    'classification': result['classification'],
-                    'center_point': {
-                        'x': int(result['center_point'][0]),
-                        'y': int(result['center_point'][1])
-                    },
-                    'sky_pixels': int(result['sky_pixels']),
-                    'canopy_pixels': int(result['canopy_pixels']),
-                    'total_pixels': int(result['total_pixels']),
-                    'canopy_percentage': float(result['canopy_percentage'])
-                }
+                # Update progress
+                analysis_label.config(text=f"Analyzing: {os.path.basename(file_path)}")
+                processed_count += 1
+                analysis_bar["value"] = processed_count
+                analysis_progress_window.update()
                 
-            with open(output_file, 'w') as f:
-                json.dump(results_to_save, f, indent=4)
-                
-            messagebox.showinfo("Analysis Complete", 
-                              f"Canopy analysis completed and results saved to {output_file}")
+                # Process with default parameters or loaded JSON data
+                classification_data = self.classification_data.get(file_path, {})
+                custom_center = classification_data.get("mask_center")
+                custom_classification = classification_data.get("classification")
+
+                # Run the *full* processing (red circle + green/blue)
+                # This function automatically adds the result to self.canopy_results
+                # Because self.using_custom_params is False, this will
+                # only use custom params if file_path is in self.custom_params
+                self.process_image_with_center(
+                    file_path, 
+                    custom_center=custom_center,
+                    custom_classification=custom_classification
+                )
             
-            # Enable export visualizations button
-            self.export_visualizations_button.config(state=tk.NORMAL)
-            
-            # Display canopy analysis for current image
-            if self.current_file_path:
-                self.display_canopy_analysis(self.current_file_path)
-            
-        except Exception as e:
-            messagebox.showerror("Save Error", f"Error saving results: {str(e)}")
-    
-    def export_visualizations(self):
-        """Export visualization images and CSV data"""
+            analysis_progress_window.destroy()
+            print("Analysis of missing files complete.")
+
+            # --- FIX ---
+            # Restore the slider state
+            self.using_custom_params = current_slider_state
+            # --- END FIX ---
+
+        # By this point, self.canopy_results is fully populated with
+        # all user-modified data and all default-processed missing files.
+        # We DO NOT run batch_process, as that would override user settings.
+        # --- END of logic to process missing files ---
+        
+        # --- START of original export_visualizations logic ---
         if not hasattr(self, 'canopy_results') or not self.canopy_results:
             messagebox.showinfo("No Results", "No canopy analysis results available. Please run canopy analysis first.")
             return
@@ -969,6 +1177,9 @@ class CanopyAnalyzer:
             progress_bar["value"] = processed
             progress_label.config(text=f"Processing: {os.path.basename(file_path)}")
             progress_window.update()
+            
+            # --- NEW: Extract GPS data ---
+            gps_data = get_gps_data(file_path)
             
             # Create and save visualization images
             self.create_and_save_visualization(file_path, result, output_dir)
@@ -1010,6 +1221,8 @@ class CanopyAnalyzer:
                     csv_data.append({
                         'image_path': os.path.basename(file_path),
                         'center': [center[0], center[1]],
+                        'latitude': gps_data.get('latitude') if gps_data else None,    # <-- NEW
+                        'longitude': gps_data.get('longitude') if gps_data else None, # <-- NEW
                         'avg_hue': avg_hue,
                         'avg_saturation': avg_saturation,
                         'avg_value': avg_value,
@@ -1054,6 +1267,8 @@ class CanopyAnalyzer:
             main_columns = [
                 'image_path',
                 'center',
+                'latitude',    # <-- NEW
+                'longitude',   # <-- NEW
                 'avg_hue',
                 'avg_saturation',
                 'avg_value',
@@ -1075,17 +1290,43 @@ class CanopyAnalyzer:
             for row in existing_data:
                 writer.writerow(row)
         
-        # Create a new JSON file with all results including custom parameters
-        json_output = {}
+        # --- JSON Export (Modified to update a single file) ---
+        
+        # Define the static path for the JSON file
+        json_path = os.path.join(output_dir, 'canopy_analysis_results.json')
+        
+        # 1. Read existing JSON data if the file exists
+        existing_json_data = {}
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r') as f:
+                    existing_json_data = json.load(f)
+                    if not isinstance(existing_json_data, dict):
+                         existing_json_data = {} # Ensure it's a dict
+            except json.JSONDecodeError:
+                print(f"Warning: Existing JSON file {json_path} is corrupted. A new file will be created.")
+                existing_json_data = {}
+            except Exception as e:
+                print(f"Warning: Could not read existing JSON file: {e}")
+                existing_json_data = {}
+
+        # 2. Prepare new data from the current analysis
+        new_json_data = {}
         for file_path, result in self.canopy_results.items():
             basename = os.path.basename(file_path)
-            json_output[basename] = {
+            
+            # Get GPS data for this file
+            gps_data = get_gps_data(file_path) # <-- NEW
+            
+            new_json_data[basename] = {
                 'file_name': basename,
                 'classification': result['classification'],
                 'center_point': {
                     'x': int(result['center_point'][0]),
                     'y': int(result['center_point'][1])
                 },
+                'latitude': gps_data.get('latitude') if gps_data else None,    # <-- NEW
+                'longitude': gps_data.get('longitude') if gps_data else None, # <-- NEW
                 'sky_pixels': int(result['sky_pixels']),
                 'canopy_pixels': int(result['canopy_pixels']),
                 'total_pixels': int(result['total_pixels']),
@@ -1094,19 +1335,24 @@ class CanopyAnalyzer:
             
             # Add custom parameters if they exist
             if file_path in self.custom_params:
-                json_output[basename]['custom_parameters'] = self.custom_params[file_path]
+                new_json_data[basename]['custom_parameters'] = self.custom_params[file_path]
         
-        # Save the JSON file
-        json_path = os.path.join(output_dir, f"canopy_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-        with open(json_path, 'w') as f:
-            json.dump(json_output, f, indent=4)
+        # 3. Merge old and new data (new data overwrites old for matching keys)
+        existing_json_data.update(new_json_data)
+        
+        # 4. Save the merged data back to the static JSON file
+        try:
+            with open(json_path, 'w') as f:
+                json.dump(existing_json_data, f, indent=4)
+        except Exception as e:
+            messagebox.showerror("JSON Save Error", f"Failed to save JSON results to {json_path}: {str(e)}")
         
         # Close progress window
         progress_window.destroy()
         
         # Notify user of completion
         messagebox.showinfo("Export Complete", 
-                          f"Exported {total_images} visualizations and updated CSV data to:\n{output_dir}")
+                          f"Exported {total_images} visualizations and updated CSV/JSON data to:\n{output_dir}")
     
     def create_and_save_visualization(self, file_path, result, output_dir):
         """Create and save visualization images for a single processed image"""
@@ -1243,6 +1489,7 @@ class CanopyAnalyzer:
     def display_canopy_analysis(self, file_path):
         """Display canopy analysis visualization for the current image"""
         if file_path not in self.canopy_results:
+            # This should ideally not be called if results don't exist
             messagebox.showinfo("No Analysis", "Canopy analysis not available for this image.")
             return
             
@@ -1332,6 +1579,9 @@ class CanopyAnalyzer:
         cv2.circle(overlay, center, radius, (0, 0, 255), 4)
         cv2.circle(overlay, center, 5, (0, 0, 255), -1)
         
+        # Store the overlay for the toggle button
+        self.canopy_results[file_path]["overlay_image"] = overlay
+        
         # Update the info display with canopy analysis data
         self.classification_label.config(text=f"Classification: {result['classification']}")
         self.brightness_label.config(text=f"Canopy Percentage: {result['canopy_percentage']:.1f}%")
@@ -1341,8 +1591,8 @@ class CanopyAnalyzer:
         # Set the classification dropdown to match the current classification
         self.classification_var.set(result['classification'])
         
-        # Display the overlay image
-        self.display_image(overlay)
+        # Display the overlay image using the master refresh function
+        self.refresh_image_display()
 
     def on_config_canvas_configure(self, event):
         """Update the scrollregion when the canvas size changes"""
@@ -1591,7 +1841,7 @@ class CanopyAnalyzer:
                 self.using_custom_params = True
             else:
                 # Use default parameters
-                self.reset_parameters()
+                self.reset_parameters(reanalyze=False) # Don't re-analyze, just set sliders
         else:
             # Hide parameter adjustment panel
             self.adjustment_frame.pack_forget()
@@ -1614,10 +1864,13 @@ class CanopyAnalyzer:
         self.using_custom_params = True
         self.custom_params_label.config(text="Using Custom Parameters (Unsaved)", foreground="blue")
         
+        # Ensure mask is visible to see the change
+        self.show_mask_preview.set(True)
+        
         # Re-analyze the current image with custom parameters
-        self.reanalyze_with_custom_parameters()
+        self.reanalyze_with_custom_parameters(self.current_file_path)
     
-    def reset_parameters(self):
+    def reset_parameters(self, reanalyze=True):
         """Reset parameters to default values from config"""
         # Reset all parameter variables to config defaults
         self.param_vars["blue_hue_min"].set(config.BLUE_SKY_HUE_MIN)
@@ -1637,15 +1890,19 @@ class CanopyAnalyzer:
         self.using_custom_params = False
         self.custom_params_label.config(text="Using Default Parameters", foreground="gray")
         
-        # Reanalyze with default parameters
-        if self.current_file_path:
-            # Reset to original classification
-            if self.current_file_path in self.batch_results:
-                classification = self.batch_results[self.current_file_path]["classification"]
-                self.classification_var.set(classification)
-                
-                # Reprocess with default parameters
-                self.reanalyze_canopy_with_new_classification()
+        if reanalyze:
+            # Reanalyze with default parameters
+            if self.current_file_path:
+                # Reset to original classification
+                if self.current_file_path in self.batch_results:
+                    classification = self.batch_results[self.current_file_path]["classification"]
+                    self.classification_var.set(classification)
+                    
+                    # Ensure mask is visible
+                    self.show_mask_preview.set(True)
+                    
+                    # Reprocess with default parameters
+                    self.reanalyze_canopy_with_new_classification(self.current_file_path)
     
     def apply_custom_parameters(self):
         """Save the current parameter values for this image"""
@@ -1674,18 +1931,20 @@ class CanopyAnalyzer:
         if self.current_file_path in self.batch_results:
             self.batch_results[self.current_file_path]["custom_parameters"] = self.custom_params[self.current_file_path]
     
-    def reanalyze_with_custom_parameters(self):
-        """Re-analyze the current image with custom parameters"""
-        if not self.current_file_path or not hasattr(self, 'original_image'):
+    def reanalyze_with_custom_parameters(self, file_path_to_process):
+        """Re-analyze the specified image with custom parameters"""
+        if file_path_to_process not in self.batch_results:
+            print(f"Error: Cannot reanalyze {file_path_to_process}, no batch results found.")
             return
         
-        # Get current classification and center point
-        classification = self.classification_var.get()
-        
-        if self.current_file_path in self.batch_results:
-            center_point = self.batch_results[self.current_file_path]["mask_center"]
+        # Get current classification and center point from stored batch results
+        classification = self.batch_results[file_path_to_process]["classification"]
+        center_point = self.batch_results[file_path_to_process]["mask_center"]
             
-            # Get current parameter values
+        # --- Get correct parameters ---
+        params = {}
+        if file_path_to_process == self.current_file_path and self.using_custom_params:
+            # Use active sliders for the current image
             params = {
                 "blue_hue_min": self.param_vars["blue_hue_min"].get(),
                 "blue_hue_max": self.param_vars["blue_hue_max"].get(),
@@ -1696,104 +1955,116 @@ class CanopyAnalyzer:
                 "very_bright_threshold": self.param_vars["very_bright_threshold"].get(),
                 "bright_threshold": self.param_vars["bright_threshold"].get(),
             }
+        elif file_path_to_process in self.custom_params:
+            # Use saved custom params for a non-current image (or current image)
+            params = self.custom_params[file_path_to_process]
+        else:
+            # This should not be called, but as a fallback, use defaults
+            # This case is handled by process_image_with_center's if/else
+            print(f"Warning: reanalyze_with_custom_parameters called on {file_path_to_process} but no params found. Using defaults.")
+            self.reanalyze_canopy_with_new_classification(file_path_to_process)
+            return
+        
+        # Create a new analyzer with custom parameters
+        analyzer = CanopyAnalyzerModule(config)
+        
+        # Process the image
+        image = cv2.imread(file_path_to_process)
+        if image is None:
+            messagebox.showerror("Error", f"Could not load image: {file_path_to_process}")
+            return
+        
+        # Get image dimensions
+        h, w = image.shape[:2]
+        radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
+        
+        # Create HSV image for processing
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        h_chan, s_chan, v_chan = cv2.split(hsv)
+        
+        # Create circular mask
+        Y, X = np.ogrid[:h, :w]
+        dist_from_center = np.sqrt((X - center_point[0])**2 + (Y - center_point[1])**2)
+        mask_area = dist_from_center <= radius
+        
+        # For all classifications, first identify very bright areas (sun)
+        # Very bright pixels (like sun) with low saturation are always sky
+        sun_areas = (v_chan > params["very_bright_threshold"]) & (s_chan < 10) & mask_area
+        
+        # Apply thresholds based on classification using custom parameters
+        if classification == "Bright Sky":
+            # For bright skies, focus more on value channel
+            bright_sky = (v_chan > params["bright_threshold"]) & mask_area
+            sky_mask = sun_areas | bright_sky
+        elif classification == "Medium Sky":
+            # Blue sky: custom HSV range
+            blue_sky = (
+                (h_chan >= params["blue_hue_min"]) & (h_chan <= params["blue_hue_max"]) &
+                (s_chan >= params["blue_sat_min"]) & (s_chan <= 255) &
+                (v_chan >= params["blue_value_min"]) & (v_chan <= 255)
+            )
             
-            # Create a new analyzer with custom parameters
-            analyzer = CanopyAnalyzerModule(config)
+            # White sky: custom thresholds
+            white_sky = (
+                (s_chan <= params["white_sat_max"]) &
+                (v_chan >= params["white_value_min"])
+            )
             
-            # Process the image
-            image = cv2.imread(self.current_file_path)
-            if image is None:
-                messagebox.showerror("Error", f"Could not load image: {self.current_file_path}")
-                return
+            # Combined sky mask - sun areas are always sky, plus blue sky and white sky
+            sky_mask = sun_areas | ((blue_sky | white_sky) & mask_area)
+        else:  # Low Sky
+            # Use the same approach but with low sky thresholds
+            blue_sky = (
+                (h_chan >= params["blue_hue_min"]) & (h_chan <= params["blue_hue_max"]) &
+                (s_chan >= params["blue_sat_min"]) & (s_chan <= 255) &
+                (v_chan >= params["blue_value_min"]) & (v_chan <= 255)
+            )
             
-            # Get image dimensions
-            h, w = image.shape[:2]
-            radius = int(min(h, w) * (config.MASK_RADIUS_PERCENT / 100))
+            white_sky = (
+                (s_chan <= params["white_sat_max"]) &
+                (v_chan >= params["white_value_min"])
+            )
             
-            # Create HSV image for processing
-            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-            h_chan, s_chan, v_chan = cv2.split(hsv)
-            
-            # Create circular mask
-            Y, X = np.ogrid[:h, :w]
-            dist_from_center = np.sqrt((X - center_point[0])**2 + (Y - center_point[1])**2)
-            mask_area = dist_from_center <= radius
-            
-            # For all classifications, first identify very bright areas (sun)
-            # Very bright pixels (like sun) with low saturation are always sky
-            sun_areas = (v_chan > params["very_bright_threshold"]) & (s_chan < 10) & mask_area
-            
-            # Apply thresholds based on classification using custom parameters
-            if classification == "Bright Sky":
-                # For bright skies, focus more on value channel
-                bright_sky = (v_chan > params["bright_threshold"]) & mask_area
-                sky_mask = sun_areas | bright_sky
-            elif classification == "Medium Sky":
-                # Blue sky: custom HSV range
-                blue_sky = (
-                    (h_chan >= params["blue_hue_min"]) & (h_chan <= params["blue_hue_max"]) &
-                    (s_chan >= params["blue_sat_min"]) & (s_chan <= 255) &
-                    (v_chan >= params["blue_value_min"]) & (v_chan <= 255)
-                )
-                
-                # White sky: custom thresholds
-                white_sky = (
-                    (s_chan <= params["white_sat_max"]) &
-                    (v_chan >= params["white_value_min"])
-                )
-                
-                # Combined sky mask - sun areas are always sky, plus blue sky and white sky
-                sky_mask = sun_areas | ((blue_sky | white_sky) & mask_area)
-            else:  # Low Sky
-                # Use the same approach but with low sky thresholds
-                blue_sky = (
-                    (h_chan >= params["blue_hue_min"]) & (h_chan <= params["blue_hue_max"]) &
-                    (s_chan >= params["blue_sat_min"]) & (s_chan <= 255) &
-                    (v_chan >= params["blue_value_min"]) & (v_chan <= 255)
-                )
-                
-                white_sky = (
-                    (s_chan <= params["white_sat_max"]) &
-                    (v_chan >= params["white_value_min"])
-                )
-                
-                # Combined sky mask - sun areas are always sky
-                sky_mask = sun_areas | ((blue_sky | white_sky) & mask_area)
-            
-            # Canopy mask is everything in mask_area that's not sky
-            canopy_mask = mask_area & ~sky_mask
-            
-            # Count pixels for statistics
-            total_pixels = np.sum(mask_area)
-            sky_pixels = np.sum(sky_mask)
-            canopy_pixels = np.sum(canopy_mask)
-            canopy_percentage = (canopy_pixels / total_pixels) * 100 if total_pixels > 0 else 0
-            
-            # Create overlay for preview
-            overlay = image.copy()
-            overlay[sky_mask] = [255, 0, 0]  # Blue for sky (BGR format)
-            overlay[canopy_mask] = [0, 255, 0]  # Green for canopy
-            
-            # Add circle boundary
-            cv2.circle(overlay, center_point, radius, (0, 0, 255), 4)
-            cv2.circle(overlay, center_point, 5, (0, 0, 255), -1)
-            
-            # Create result dictionary
-            result = {
-                "classification": classification,
-                "center_point": center_point,
-                "canopy_percentage": canopy_percentage,
-                "total_pixels": total_pixels,
-                "sky_pixels": sky_pixels,
-                "canopy_pixels": canopy_pixels,
-                "sky_mask": sky_mask,
-                "canopy_mask": canopy_mask,
-                "custom_parameters": params
-            }
-            
-            # Update the canopy results for this image
-            self.canopy_results[self.current_file_path] = result
-            
+            # Combined sky mask - sun areas are always sky
+            sky_mask = sun_areas | ((blue_sky | white_sky) & mask_area)
+        
+        # Canopy mask is everything in mask_area that's not sky
+        canopy_mask = mask_area & ~sky_mask
+        
+        # Count pixels for statistics
+        total_pixels = np.sum(mask_area)
+        sky_pixels = np.sum(sky_mask)
+        canopy_pixels = np.sum(canopy_mask)
+        canopy_percentage = (canopy_pixels / total_pixels) * 100 if total_pixels > 0 else 0
+        
+        # Create overlay for preview
+        overlay = image.copy()
+        overlay[sky_mask] = [255, 0, 0]  # Blue for sky (BGR format)
+        overlay[canopy_mask] = [0, 255, 0]  # Green for canopy
+        
+        # Add circle boundary
+        cv2.circle(overlay, center_point, radius, (0, 0, 255), 4)
+        cv2.circle(overlay, center_point, 5, (0, 0, 255), -1)
+        
+        # Create result dictionary
+        result = {
+            "classification": classification,
+            "center_point": center_point,
+            "canopy_percentage": canopy_percentage,
+            "total_pixels": total_pixels,
+            "sky_pixels": sky_pixels,
+            "canopy_pixels": canopy_pixels,
+            "sky_mask": sky_mask,
+            "canopy_mask": canopy_mask,
+            "custom_parameters": params,
+            "overlay_image": overlay  # <-- Store the overlay
+        }
+        
+        # Update the canopy results for this image
+        self.canopy_results[file_path_to_process] = result
+        
+        # If this is the currently viewed image, update the UI
+        if file_path_to_process == self.current_file_path:
             # Update the info display with canopy analysis data
             self.classification_label.config(text=f"Classification: {result['classification']}")
             self.brightness_label.config(text=f"Canopy Percentage: {result['canopy_percentage']:.1f}%")
@@ -1801,7 +2072,7 @@ class CanopyAnalyzer:
             self.bright_pixels_label.config(text=f"Canopy Pixels: {result['canopy_pixels']}")
             
             # Display the overlay image
-            self.display_image(overlay)
+            self.refresh_image_display()
 
 def main():
     root = tk.Tk()
@@ -1809,4 +2080,4 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
-    main() 
+    main()
