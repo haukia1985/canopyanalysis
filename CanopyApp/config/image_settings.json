@@ -1,0 +1,15 @@
+{
+    "test_image.jpg": {
+        "thresholds": {
+            "blue_hue_low": 100,
+            "blue_hue_high": 130,
+            "blue_sat_low": 50,
+            "blue_sat_high": 255,
+            "blue_val_low": 150,
+            "blue_val_high": 255,
+            "white_sat_threshold": 30,
+            "white_val_threshold": 220,
+            "bright_val_threshold": 240
+        }
+    }
+}
