@@ -10,6 +10,7 @@ A Python application for analyzing canopy cover in forest images. This tool help
 - Canopy percentage calculation
 - Batch processing capabilities
 - Interactive GUI with image preview and result visualization
+- MAP view of the project if images have location data
 
 ## Project Structure
 
@@ -44,29 +45,17 @@ A Python application for analyzing canopy cover in forest images. This tool help
 └── run.py                  # Alternative entry point script
 ```
 
-## Installation
-
-### Option 1: Simple Installation (Recommended)
-
-1. Download or clone this repository
-2. Make sure Python 3.7+ is installed on your system
-3. Run the installer script:
-   ```
-   python install.py
-   ```
-4. The installer will:
-   - Install all required dependencies
-   - Set up the application
-   - Create a desktop shortcut or application (if possible)
-
-After installation, you can run the application by:
-- Double-clicking the desktop shortcut
-- Running `canopy-analyzer` in your terminal/command prompt
+## Installation and update
+NOTE
+If you update your app
+run pip install folium 
+OR
+pip install -r requirements.txt first. This will install new library folium.
 
 ### Option 2: Manual Installation
 
-1. Clone this repository
-2. Create a virtual environment:
+1. Clone / download this repository
+2. Optional Create a virtual environment:
    ```
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
@@ -104,6 +93,7 @@ This will open the GUI interface where you can:
 - Matplotlib
 - scikit-image
 - pandas
+- Folium
 
 ## Extending the Application
 
