@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import os
 from PIL import Image, ImageTk
-from PIL.ExifTags import TAGS, GPSTAGS  # <-- NEW IMPORT
+from PIL.ExifTags import TAGS, GPSTAGS
 import cv2
 import numpy as np
 import config
@@ -19,6 +19,8 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for saving figures
 from datetime import datetime
+import folium                     # <-- NEW IMPORT
+import branca.colormap as cm      # <-- NEW IMPORT for colormap legend
 
 def create_circular_mask(h, w, center, radius):
     """Create a circular mask with the given dimensions and parameters."""
@@ -213,7 +215,7 @@ def process_single_image(image_path, custom_center=None, custom_classification=N
     
     return image, classification, avg_brightness, white_percent, bright_percent, masked_image, mask, display_image, center
 
-# --- NEW HELPER FUNCTIONS FOR GPS ---
+# --- HELPER FUNCTIONS FOR GPS ---
 
 def _convert_to_degrees(value):
     """Helper function to convert GPS DMS (degrees, minutes, seconds) to decimal degrees."""
@@ -264,7 +266,80 @@ def get_gps_data(image_path):
         print(f"Error reading EXIF data for {image_path}: {e}")
         return None
 
-# --- END OF NEW HELPER FUNCTIONS ---
+# --- NEW FUNCTION TO CREATE MAP ---
+
+def create_canopy_map(results_data, output_dir):
+    """
+    Creates an HTML map visualizing canopy cover percentages at image locations.
+    
+    Args:
+        results_data (list): A list of dictionaries, where each dict corresponds 
+                             to a row in the CSV data (must include 'latitude', 
+                             'longitude', 'canopy_density', 'image_path').
+        output_dir (str): The directory to save the map file.
+    """
+    # Filter results to include only those with valid GPS data
+    points_with_gps = [
+        point for point in results_data 
+        if point.get('latitude') is not None and point.get('longitude') is not None
+    ]
+
+    if not points_with_gps:
+        print("No GPS data found in results. Skipping map generation.")
+        return
+
+    # Calculate map center (average lat/lon)
+    avg_lat = sum(p['latitude'] for p in points_with_gps) / len(points_with_gps)
+    avg_lon = sum(p['longitude'] for p in points_with_gps) / len(points_with_gps)
+
+    # Initialize map
+    canopy_map = folium.Map(location=[avg_lat, avg_lon], zoom_start=12)
+
+    # Define a colormap (e.g., green for high canopy, yellow/brown for low)
+    # Using a predefined colormap from branca. Adjust range if needed (0 to 1 for density).
+    colormap = cm.LinearColormap(
+        colors=['#d2b48c', '#ffff00', '#adff2f', '#008000'], # Tan -> Yellow -> GreenYellow -> Green
+        index=[0, 0.33, 0.66, 1], # Define steps for colors (based on canopy density 0-1)
+        vmin=0, vmax=1, 
+        caption='Canopy Density (0=Low, 1=High)'
+    )
+    canopy_map.add_child(colormap) # Add legend to map
+
+    # Add markers for each image
+    for point in points_with_gps:
+        lat = point['latitude']
+        lon = point['longitude']
+        density = point['canopy_density'] # Density is 0-1
+        filename = point['image_path']
+        canopy_percent = density * 100
+
+        # Determine marker color based on canopy density
+        marker_color = colormap(density)
+
+        # Create popup text
+        popup_text = f"<b>File:</b> {filename}<br><b>Canopy Cover:</b> {canopy_percent:.1f}%"
+
+        # Add CircleMarker to map
+        folium.CircleMarker(
+            location=[lat, lon],
+            radius=6, # Adjust size as needed
+            popup=folium.Popup(popup_text, max_width=300),
+            color=marker_color,
+            fill=True,
+            fill_color=marker_color,
+            fill_opacity=0.8
+        ).add_to(canopy_map)
+
+    # Save map to HTML file
+    map_file_path = os.path.join(output_dir, 'canopy_cover_map.html')
+    try:
+        canopy_map.save(map_file_path)
+        print(f"Canopy cover map saved to {map_file_path}")
+    except Exception as e:
+        print(f"Error saving map: {e}")
+
+# --- END OF NEW MAP FUNCTION ---
+
 
 class CanopyAnalyzer:
     def __init__(self, root):
@@ -671,8 +746,9 @@ class CanopyAnalyzer:
             messagebox.showerror("Error", f"Could not load image: {file_path}")
             return
                 
-        # Store original image for reprocessing
-        self.original_image = image
+        # Store original image for reprocessing only if it's the current file path
+        if file_path == self.current_file_path:
+            self.original_image = image
                 
         # Store results in batch dictionary (red circle)
         self.batch_results[file_path] = {
@@ -947,15 +1023,23 @@ class CanopyAnalyzer:
                 image_to_display = self.original_image
             else: 
                 # Fallback to loading it if not in memory
-                self.original_image = cv2.imread(self.current_file_path)
-                image_to_display = self.original_image
+                if self.current_file_path and os.path.exists(self.current_file_path):
+                     self.original_image = cv2.imread(self.current_file_path)
+                     image_to_display = self.original_image
+                else:
+                    print(f"Warning: Original image for {self.current_file_path} not available.")
+                    return # Cannot display anything
 
         if image_to_display is not None:
             self.display_image(image_to_display, force_resize=force_resize)
         else:
             # As a last resort, try to load the original image
             if self.original_image is None:
-                self.original_image = cv2.imread(self.current_file_path)
+                 if self.current_file_path and os.path.exists(self.current_file_path):
+                     self.original_image = cv2.imread(self.current_file_path)
+                 else:
+                     print(f"Warning: Original image for {self.current_file_path} not available.")
+                     return # Cannot display anything
             if self.original_image is not None:
                 self.display_image(self.original_image, force_resize=force_resize)
             
@@ -964,6 +1048,10 @@ class CanopyAnalyzer:
         Low-level function to render a given OpenCV image to the
         image_label. Handles resizing and Tkinter PhotoImage conversion.
         """
+        if image is None:
+            print("Warning: display_image called with None image.")
+            return
+            
         # Store the OpenCV image for potential redisplay
         self.last_displayed_cv_image = image.copy()
         
@@ -1068,7 +1156,7 @@ class CanopyAnalyzer:
     
     def export_visualizations(self):
         """
-        Process any remaining images and export visualization images, CSV data, and JSON results.
+        Process any remaining images and export visualization images, CSV data, JSON results, and HTML map.
         This function now incorporates the logic from the old process_canopy_analysis.
         """
         # --- START of logic to process missing files ---
@@ -1217,12 +1305,16 @@ class CanopyAnalyzer:
                     brightness_values = gray[mask]
                     avg_brightness = np.mean(brightness_values)
                     
+                    # --- *** BUG FIX HERE *** ---
+                    # Added check for result['total_pixels'] > 0
+                    canopy_density = (result['canopy_pixels'] / result['total_pixels']) if result['total_pixels'] > 0 else 0
+                    
                     # Add data to CSV records
                     csv_data.append({
                         'image_path': os.path.basename(file_path),
                         'center': [center[0], center[1]],
-                        'latitude': gps_data.get('latitude') if gps_data else None,    # <-- NEW
-                        'longitude': gps_data.get('longitude') if gps_data else None, # <-- NEW
+                        'latitude': gps_data.get('latitude') if gps_data else None,
+                        'longitude': gps_data.get('longitude') if gps_data else None,
                         'avg_hue': avg_hue,
                         'avg_saturation': avg_saturation,
                         'avg_value': avg_value,
@@ -1230,7 +1322,7 @@ class CanopyAnalyzer:
                         'total_pixels': result['total_pixels'],
                         'sky_pixels': result['sky_pixels'],
                         'canopy_pixels': result['canopy_pixels'],
-                        'canopy_density': result['canopy_pixels'] / result['total_pixels']
+                        'canopy_density': canopy_density  # <-- Use corrected variable
                     })
                     
                     # Add custom parameters if they exist
@@ -1252,7 +1344,7 @@ class CanopyAnalyzer:
             # Find if this image already exists in the data
             found = False
             for i, existing_row in enumerate(existing_data):
-                if existing_row['image_path'] == new_row['image_path']:
+                if existing_row.get('image_path') == new_row.get('image_path'): # Use .get for safety
                     # Update existing row
                     existing_data[i] = new_row
                     found = True
@@ -1267,8 +1359,8 @@ class CanopyAnalyzer:
             main_columns = [
                 'image_path',
                 'center',
-                'latitude',    # <-- NEW
-                'longitude',   # <-- NEW
+                'latitude',
+                'longitude',
                 'avg_hue',
                 'avg_saturation',
                 'avg_value',
@@ -1316,7 +1408,7 @@ class CanopyAnalyzer:
             basename = os.path.basename(file_path)
             
             # Get GPS data for this file
-            gps_data = get_gps_data(file_path) # <-- NEW
+            gps_data = get_gps_data(file_path) 
             
             new_json_data[basename] = {
                 'file_name': basename,
@@ -1325,8 +1417,8 @@ class CanopyAnalyzer:
                     'x': int(result['center_point'][0]),
                     'y': int(result['center_point'][1])
                 },
-                'latitude': gps_data.get('latitude') if gps_data else None,    # <-- NEW
-                'longitude': gps_data.get('longitude') if gps_data else None, # <-- NEW
+                'latitude': gps_data.get('latitude') if gps_data else None,
+                'longitude': gps_data.get('longitude') if gps_data else None,
                 'sky_pixels': int(result['sky_pixels']),
                 'canopy_pixels': int(result['canopy_pixels']),
                 'total_pixels': int(result['total_pixels']),
@@ -1347,12 +1439,17 @@ class CanopyAnalyzer:
         except Exception as e:
             messagebox.showerror("JSON Save Error", f"Failed to save JSON results to {json_path}: {str(e)}")
         
+        # --- NEW: Create and save the map ---
+        # We pass 'existing_data' which is the complete, merged CSV data
+        create_canopy_map(existing_data, output_dir) 
+        # --- END NEW MAP ---
+        
         # Close progress window
         progress_window.destroy()
         
         # Notify user of completion
         messagebox.showinfo("Export Complete", 
-                          f"Exported {total_images} visualizations and updated CSV/JSON data to:\n{output_dir}")
+                          f"Exported {total_images} visualizations, updated CSV/JSON data,\nand created map to:\n{output_dir}")
     
     def create_and_save_visualization(self, file_path, result, output_dir):
         """Create and save visualization images for a single processed image"""
@@ -1501,7 +1598,11 @@ class CanopyAnalyzer:
         if image is None:
             messagebox.showerror("Error", f"Could not load image: {file_path}")
             return
-            
+        # --- *** ADD THIS LINE *** ---
+         # Store this as the current original image to fix the toggle bug
+        self.original_image = image 
+    # --- *** END OF FIX *** ---
+        
         # Get image dimensions and analysis parameters
         h, w = image.shape[:2]
         center = result['center_point']
@@ -1581,6 +1682,10 @@ class CanopyAnalyzer:
         
         # Store the overlay for the toggle button
         self.canopy_results[file_path]["overlay_image"] = overlay
+        
+        # --- *** FIX 2 (The new fix for the filename label) *** ---
+        self.file_name_label.config(text=f"File: {os.path.basename(file_path)}")
+        # --- *** END OF FIX 2 *** ---
         
         # Update the info display with canopy analysis data
         self.classification_label.config(text=f"Classification: {result['classification']}")
@@ -1857,7 +1962,7 @@ class CanopyAnalyzer:
     
     def update_image_with_current_parameters(self):
         """Update the image preview using current parameter values"""
-        if not self.current_file_path or not hasattr(self, 'original_image'):
+        if not self.current_file_path or not hasattr(self, 'original_image') or self.original_image is None:
             return
         
         # Mark that we're using custom parameters
