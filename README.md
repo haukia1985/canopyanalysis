@@ -1,6 +1,9 @@
 # Canopy Cover Analysis Application
 
-A Python application for analyzing canopy cover in forest images. This tool helps classify sky conditions and calculate the percentage of canopy coverage in photographs taken in forest environments.
+A Python application for analyzing canopy cover in forest images. This tool helps classify sky conditions and calculate the percentage of canopy coverage in photographs taken in forest environments. 
+LINK TO HOWTO VIDEO HERE! 
+https://vimeo.com/1132284084/62617673fe?share=copy&fl=sv&fe=ci
+
 
 ## Features
 
